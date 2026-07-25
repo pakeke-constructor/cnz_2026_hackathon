@@ -91,6 +91,15 @@ class Level {
     // contains stuff for a level.
     transactions: List<VictimTransaction> 
     state: State
+
+    // we explicitly whitelist the transactions types that are allowed for this level.
+    // That way, instead of players being bombarded with new stuff, it's kept optimal.
+    allowedOperations: [BUY(DOGE), SELL(DOGE)]
+
+    // For example, for triangular arbitrage, we would want something like this:
+    // allowedOperations: [
+    //     BUY(DOGE), SELL(DOGE), BUY(XRP), SELL(XRP), SWAP(DOGE,XRP), SWAP(XRP,DOGE)
+    // ]
 }
 
 class LP {
@@ -100,7 +109,7 @@ class LP {
     pool2: number
 }
 
-type Owner = string
+type Owner = string // "PLAYER" refers to the player's ownership
 type Asset = string
 
 class State {
