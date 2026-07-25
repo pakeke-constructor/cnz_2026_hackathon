@@ -116,13 +116,23 @@ class Swap extends Transaction {
       : Math.sqrt(price * price + 2 * this.amountIn) - price;
   }
 
-  limitPrice(): number | undefined {
+  // The price the pool must be at for this swap to be exactly at its revert
+  // threshold. The trade sweeps the price over a band of width `qty`; we return
+  // both edges. `limit` is the "after" edge (the hard threshold shown thick),
+  // `other` is the "before" edge (shown thin, for context).
+  limitPrice(): { limit: number; other: number } | undefined {
     if (this.minAmountOut === undefined) return undefined;
-    if (this.side === "BUY" && this.amountIn !== undefined)
-      return this.amountIn / this.minAmountOut - this.minAmountOut / 2;
-    if (this.side === "SELL") return this.minAmountOut / this.qty + this.qty / 2;
+    if (this.side === "BUY" && this.amountIn !== undefined) {
+      const mid = this.amountIn / this.minAmountOut;
+      return { limit: mid + this.minAmountOut / 2, other: mid - this.minAmountOut / 2 };
+    }
+    if (this.side === "SELL") {
+      const mid = this.minAmountOut / this.qty;
+      return { limit: mid + this.qty / 2, other: mid - this.qty / 2 };
+    }
     return undefined;
   }
+
 
   isValid(s: State): boolean {
     if (this.minAmountOut === undefined) return true;
@@ -512,8 +522,8 @@ function drawGraph(level: Level, execFrac?: number): void {
   for (const p of level.pools) allPrices.push(p.price);
   for (const s of sims) {
     if (s.txn instanceof Swap) {
-      const limit = s.txn.limitPrice();
-      if (limit !== undefined) allPrices.push(limit);
+      const lim = s.txn.limitPrice();
+      if (lim !== undefined) allPrices.push(lim.limit, lim.other);
     }
   }
   const pMax = Math.max(...allPrices);
@@ -575,13 +585,22 @@ function drawGraph(level: Level, execFrac?: number): void {
   // ----- victim slippage limits -----
   for (const s of sims) {
     if (!(s.txn instanceof Swap) || s.txn.owner === "PLAYER") continue;
-    const limit = s.txn.limitPrice();
-    if (limit === undefined) continue;
+    const lim = s.txn.limitPrice();
+    if (lim === undefined) continue;
     const { xL, xR } = edgesOf(s.el);
-    const y = yOf(limit);
+    const y = yOf(lim.limit);
+    const yOther = yOf(lim.other);
     ctx.fillStyle = "rgba(240,80,110,0.16)";
     if (s.txn.side === "BUY") ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
     else ctx.fillRect(xL, y, xR - xL, Math.max(0, padT + plotH - y));
+    // thin "before" edge line for context
+    ctx.strokeStyle = "rgba(240,80,110,0.6)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xL, yOther);
+    ctx.lineTo(xR, yOther);
+    ctx.stroke();
+    // thick "after" edge line: the hard revert threshold
     ctx.strokeStyle = "#f0506e";
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -593,6 +612,7 @@ function drawGraph(level: Level, execFrac?: number): void {
     const outAsset = s.txn.side === "BUY" ? s.txn.asset : USDC;
     ctx.fillText(s.valid ? `MIN ${s.txn.minAmountOut} ${outAsset}` : "REVERTS", xL + 5, y - 5);
   }
+
 
   // ----- one line per asset -----
   // Build each asset's polyline as a flat list of points — two per box:
