@@ -103,14 +103,39 @@ class Swap extends Transaction {
     owner: Owner,
     readonly asset: Asset,
     readonly side: Side,
-    readonly qty: number
+    readonly qty: number,
+    readonly minAmountOut?: number,
+    readonly amountIn?: number
   ) {
     super(id, owner);
   }
 
-  simulate(s: State): State {
+  private buyAmountOut(price: number): number {
+    return this.amountIn === undefined
+      ? this.qty
+      : Math.sqrt(price * price + 2 * this.amountIn) - price;
+  }
+
+  limitPrice(): number | undefined {
+    if (this.minAmountOut === undefined) return undefined;
+    if (this.side === "BUY" && this.amountIn !== undefined)
+      return this.amountIn / this.minAmountOut - this.minAmountOut / 2;
+    if (this.side === "SELL") return this.minAmountOut / this.qty + this.qty / 2;
+    return undefined;
+  }
+
+  isValid(s: State): boolean {
+    if (this.minAmountOut === undefined) return true;
     const p = s.price(this.asset);
-    const q = this.qty;
+    if (this.side === "BUY") return this.buyAmountOut(p) >= this.minAmountOut - 1e-9;
+    return this.qty * (p - this.qty / 2) >= this.minAmountOut - 1e-9;
+  }
+
+  simulate(s: State): State {
+    if (!this.isValid(s)) return s;
+
+    const p = s.price(this.asset);
+    const q = this.side === "BUY" ? this.buyAmountOut(p) : this.qty;
 
     if (this.side === "BUY") {
       const cost = q * (p + q / 2);
@@ -133,7 +158,7 @@ class Swap extends Transaction {
 
   // Immutable "edit": a copy of this swap with a new quantity.
   withQty(qty: number): Swap {
-    return new Swap(this.id, this.owner, this.asset, this.side, qty);
+    return new Swap(this.id, this.owner, this.asset, this.side, qty, this.minAmountOut, this.amountIn);
   }
 }
 
@@ -191,7 +216,10 @@ const LEVEL_1: Level = {
   // Prices start in the 20–30 band so they sit nicely inside the fixed 0–50
   // Y axis (see drawGraph). Sizes are tuned so a sandwich stays under 50.
   pools: [{ asset: "DOGE", price: 25 }],
-  victims: [new Swap("v1", "Alice", "DOGE", "BUY", 10)],
+  victims: [
+    new Swap("0x1", "Alice", "DOGE", "BUY", 10, 8, 300),
+    new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
+  ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
 };
 
@@ -213,6 +241,7 @@ function initialState(level: Level): State {
 interface BoxSim {
   readonly el: HTMLElement;
   readonly txn: Transaction;
+  readonly valid: boolean;
   readonly before: ReadonlyMap<Asset, number>;
   readonly after: ReadonlyMap<Asset, number>;
   // The full immutable chain snapshots bracketing this box. Invariants read
@@ -234,10 +263,11 @@ function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
   const sims: BoxSim[] = [];
   for (const { el, txn } of boxes) {
     const stateBefore = s; // immutable: safe to hand out as-is
+    const valid = !(txn instanceof Swap) || txn.isValid(stateBefore);
     const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
     s = txn.simulate(s);
     const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-    sims.push({ el, txn, before, after, stateBefore, stateAfter: s });
+    sims.push({ el, txn, valid, before, after, stateBefore, stateAfter: s });
   }
   return { assets, sims };
 }
@@ -264,13 +294,21 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
 
   const action = document.createElement("div");
   action.className = "action";
-  action.textContent = `${swap.side === "BUY" ? "Buy" : "Sell"} ${swap.qty} ${swap.asset}`;
+  action.textContent = swap.side === "BUY" && swap.amountIn !== undefined
+    ? `Buy ${swap.asset} with ${swap.amountIn} ${USDC}`
+    : `${swap.side === "BUY" ? "Buy" : "Sell"} ${swap.qty} ${swap.asset}`;
 
   const owner = document.createElement("div");
   owner.className = "owner";
   owner.textContent = opts.victim ? txn.owner : "MEV \u{1F608}";
 
   el.append(owner, action);
+  if (opts.victim && swap.minAmountOut !== undefined) {
+    const minOut = document.createElement("div");
+    minOut.className = "min-out";
+    minOut.textContent = `Min received: ${swap.minAmountOut} ${swap.side === "BUY" ? swap.asset : USDC}`;
+    el.appendChild(minOut);
+  }
 
   if (opts.editable) {
     const slider = document.createElement("input");
@@ -461,6 +499,12 @@ function drawGraph(level: Level, execFrac?: number): void {
   for (const s of sims)
     for (const a of assets) allPrices.push(s.before.get(a)!, s.after.get(a)!);
   for (const p of level.pools) allPrices.push(p.price);
+  for (const s of sims) {
+    if (s.txn instanceof Swap) {
+      const limit = s.txn.limitPrice();
+      if (limit !== undefined) allPrices.push(limit);
+    }
+  }
   const pMax = Math.max(...allPrices);
   const Y_LO = 0;
   const Y_HI = Math.max(Y_MIN_TOP, Math.ceil((pMax * 1.1) / 10) * 10);
@@ -511,8 +555,32 @@ function drawGraph(level: Level, execFrac?: number): void {
     const s = sims[i];
     if (s.txn instanceof Noop) continue;
     const { xL, xR } = edgesOf(s.el);
-    ctx.fillStyle = i === activeIdx ? "rgba(88,166,255,0.16)" : "rgba(88,166,255,0.06)";
+    ctx.fillStyle = !s.valid
+      ? "rgba(240,80,110,0.22)"
+      : i === activeIdx ? "rgba(88,166,255,0.16)" : "rgba(88,166,255,0.06)";
     ctx.fillRect(xL, padT, xR - xL, plotH);
+  }
+
+  // ----- victim slippage limits -----
+  for (const s of sims) {
+    if (!(s.txn instanceof Swap) || s.txn.owner === "PLAYER") continue;
+    const limit = s.txn.limitPrice();
+    if (limit === undefined) continue;
+    const { xL, xR } = edgesOf(s.el);
+    const y = yOf(limit);
+    ctx.fillStyle = "rgba(240,80,110,0.16)";
+    if (s.txn.side === "BUY") ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
+    else ctx.fillRect(xL, y, xR - xL, Math.max(0, padT + plotH - y));
+    ctx.strokeStyle = "#f0506e";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(xL, y);
+    ctx.lineTo(xR, y);
+    ctx.stroke();
+    ctx.fillStyle = "#f0506e";
+    ctx.font = "700 10px ui-sans-serif, system-ui";
+    const outAsset = s.txn.side === "BUY" ? s.txn.asset : USDC;
+    ctx.fillText(s.valid ? `MIN ${s.txn.minAmountOut} ${outAsset}` : "REVERTS", xL + 5, y - 5);
   }
 
   // ----- one line per asset -----
