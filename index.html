@@ -14,9 +14,9 @@
       --line: #2a3242;
       --text: #e6edf3;
       --muted: #8b949e;
-      --buy: #2ea043;   /* green = buy DOGE */
-      --sell: #d9534f;  /* red   = sell DOGE */
-      --victim: #b08800;/* amber = victim (mempool) */
+      --buy: #2ea043;   /* green  = buy DOGE */
+      --sell: #f0506e;  /* red    = sell DOGE */
+      --victim: #ff8c1a;/* orange = victim (mempool) */
       --accent: #58a6ff;
     }
     * { box-sizing: border-box; }
@@ -125,34 +125,116 @@
 
     /* ---------- Transaction boxes ---------- */
     .txn {
+      --tone: var(--accent);                 /* per-side accent, set below */
       position: relative;
-      min-width: 120px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,.12);
-      background: var(--panel-2);
+      min-width: 128px;
+      padding: 11px 13px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.09);
+      /* subtle vertical sheen + a faint wash of the side colour */
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 42%),
+        linear-gradient(180deg, var(--panel-2), #141a24);
       cursor: grab;
       user-select: none;
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      box-shadow: 0 1px 2px rgba(0,0,0,.3);
+      gap: 3px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
+      transition: transform .1s ease, box-shadow .15s ease, border-color .15s ease;
     }
-    .txn:active { cursor: grabbing; }
-    .txn .action { font-weight: 700; font-size: 13px; }
-    .txn .owner { font-size: 11px; color: var(--muted); }
-    .txn .amt { font-size: 12px; color: var(--text); }
-    .txn.buy  { border-left: 4px solid var(--buy); }
-    .txn.sell { border-left: 4px solid var(--sell); }
-    .txn.victim { border-left-color: var(--victim); background: #241f10; }
+    /* left accent rail, drawn as a pseudo-element so it can glow */
+    .txn::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 4px;
+      background: var(--tone);
+      box-shadow: 0 0 10px -1px var(--tone);
+    }
+    .txn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255,255,255,.18);
+      box-shadow: 0 6px 16px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.03) inset;
+    }
+    .txn:active { cursor: grabbing; transform: translateY(0); }
 
-    .txn .qty { width: 100%; margin-top: 4px; accent-color: var(--accent); cursor: pointer; }
+    /* header row: direction arrow + action label */
+    .txn .action {
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: .01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .txn .action::before {
+      content: "▲";
+      font-size: 9px;
+      line-height: 1;
+      color: var(--tone);
+    }
+    .txn.sell .action::before { content: "▼"; }
+
+    .txn .amt {
+      font: 600 12px/1.2 ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+      color: var(--text);
+      opacity: .92;
+    }
+    /* owner rendered as a small pill */
+    .txn .owner {
+      align-self: flex-start;
+      margin-top: 2px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted);
+      background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.06);
+      padding: 1px 6px;
+      border-radius: 999px;
+    }
+
+    .txn.buy  { --tone: var(--buy); }
+    .txn.sell { --tone: var(--sell); }
+
+    /* Victim (mempool) — orange, with a warm tint so it clearly reads as prey */
+    .txn.victim {
+      --tone: var(--victim);
+      border-color: rgba(255,140,26,.30);
+      background:
+        linear-gradient(180deg, rgba(255,140,26,.12), rgba(255,140,26,.03) 55%),
+        linear-gradient(180deg, var(--panel-2), #141a24);
+    }
+    .txn.victim .action::before { color: var(--victim); }
+    .txn.victim .owner {
+      color: #ffc27a;
+      background: rgba(255,140,26,.14);
+      border-color: rgba(255,140,26,.28);
+    }
+
+    .txn .qty {
+      width: 100%;
+      margin-top: 6px;
+      accent-color: var(--tone);
+      cursor: pointer;
+    }
 
     /* palette templates look like a "source" */
-    .template { border-style: dashed; opacity: .95; }
+    .template {
+      border-style: dashed;
+      border-color: rgba(255,255,255,.16);
+      opacity: .92;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0));
+    }
+    .template:hover { opacity: 1; }
 
-    .sortable-ghost { opacity: .35; }
-    .sortable-chosen { outline: 1px solid var(--accent); }
+    .sortable-ghost { opacity: .3; }
+    .sortable-chosen {
+      box-shadow: 0 10px 24px -8px rgba(0,0,0,.7), 0 0 0 1px var(--accent) inset;
+    }
+    .sortable-drag { cursor: grabbing; }
   </style>
 </head>
 <body>
@@ -184,6 +266,6 @@
 
   <!-- Classic script (NOT type="module"): ES modules are blocked over file://,
        so a module tag would leave the page blank when opened via run.bat. -->
-  <script src="app.js"></script>
+  <script src="app.js" charset="utf-8"></script>
 </body>
 </html>

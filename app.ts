@@ -262,9 +262,9 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
 
   const owner = document.createElement("div");
   owner.className = "owner";
-  owner.textContent = opts.victim ? txn.owner : "you";
+  owner.textContent = opts.victim ? txn.owner : "MEV \u{1F608}";
 
-  el.append(action, amt, owner);
+  el.append(owner, action, amt);
 
   if (opts.editable) {
     const slider = document.createElement("input");
