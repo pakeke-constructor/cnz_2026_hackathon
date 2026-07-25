@@ -80,13 +80,31 @@ Bottom-right buttons: Simulate, and Submit. Simulate tests the block, without sa
 
 ## TECH-STACK:
 Use basic TS + HTML. 
-Two files: 1 html file, 1 js (typescript) file. Keep it super minimal and simple for now.
+Two files:
+- app.ts: The code for the project
+- index.html: Frontend.
 Use sortable.js for box rendering.
+
 
 ## ARCHITECTURE:
 IMPORTANT: ALL DATA SHOULD BE IMMUTABLE.
 Makes stuff simpler and less error prone.
 ```ts
+
+class PlayerTransactionMetaclass {
+    generate(): Transaction
+}
+
+class BUY extends PlayerTransactionMetaclass {
+    // `generate` is called when the player creates a new order type
+    generate(): Transaction {...}
+}
+
+class SELL extends PlayerTransactionMetaclass {
+    generate(): Transaction {...}
+}
+
+
 class Level {
     // contains stuff for a level.
     transactions: List<VictimTransaction> 
@@ -94,7 +112,9 @@ class Level {
 
     // we explicitly whitelist the transactions types that are allowed for this level.
     // That way, instead of players being bombarded with new stuff, it's kept optimal.
-    allowedOperations: [BUY(DOGE), SELL(DOGE)]
+    allowedOperations: [BUY("DOGE"), SELL("DOGE")]
+    // ^^^ this is just a list of txn-types that the player is allowed to create for this level. So in this case, the only thing the player can do is buy/sell DOGE.
+    // The "base pair" is USDC. So BUY(DOGE) == SWAP(USDC -> DOGE)
 
     // For example, for triangular arbitrage, we would want something like this:
     // allowedOperations: [
