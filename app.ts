@@ -350,7 +350,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
 
   const owner = document.createElement("div");
   owner.className = "owner";
-  owner.textContent = opts.victim ? txn.owner : "MEV \u{1F608}";
+  owner.textContent = opts.victim ? `Victim ${txn.owner}` : "MEV \u{1F608}";
 
   el.append(owner, action);
   if (opts.victim && swap.minAmountOut !== undefined) {
