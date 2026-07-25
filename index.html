@@ -158,6 +158,8 @@
     </section>
   </div>
 
-  <script src="app.js" type="module"></script>
+  <!-- Classic script (NOT type="module"): ES modules are blocked over file://,
+       so a module tag would leave the page blank when opened via run.bat. -->
+  <script src="app.js"></script>
 </body>
 </html>
