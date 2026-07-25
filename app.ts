@@ -238,10 +238,11 @@ const LEVEL_1: Level = {
   // Y axis (see drawGraph). Sizes are tuned so a sandwich stays under 50.
   pools: [{ asset: "DOGE", price: 25 }],
   victims: [
+    // Swap(tx, name, ASSET, BUY/SELL, quantity, minAmountOut, amountIn)
     new Swap("0x1", "Steve", "DOGE", "BUY", 10, 8, 300),
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
-  profitThreshold: 1.0,
+  profitThreshold: 1.28,
   hint: "Classic buy-side sandwich: BUY DOGE right BEFORE Steve to push the price up, then SELL the same amount right AFTER him. Size your front-run so Steve's trade only just goes through — the bigger the squeeze, the fatter your back-run.",
 };
 
@@ -254,7 +255,7 @@ const LEVEL_2: Level = {
     new Swap("0x2", "Kodi", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
-  profitThreshold: 2.0,
+  profitThreshold: 2.87,
   hint: "Two victims both BUY DOGE. Wrap BOTH of them in a single sandwich: one front-run BUY before the pair, one back-run SELL after the pair. Don't sandwich them separately — chaining the victims lets one front-run capture both price pushes.",
 };
 
@@ -276,7 +277,7 @@ const LEVEL_3: Level = {
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
-  profitThreshold: 1.0,
+  profitThreshold: 1.40,
   hint: "Sell-side sandwich: the victim is SELLING, so you SELL FIRST to push the price DOWN, let them dump into the lower price, then BUY BACK cheap. Front-run with the DOGE you already hold, and end the block back at your starting 40 DOGE.",
 };
 
@@ -285,12 +286,13 @@ const LEVEL_4: Level = {
   // COMBINED SELL-SIDE + BUY-SIDE
   pools: [{ asset: "DOGE", price: 70 }],
   victims: [
-    new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
-    new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
+    // Swap(tx, name, ASSET, BUY/SELL, quantity, minAmountOut, amountIn)
+    new Swap("0x1", "Steve", "DOGE", "SELL", 2, 100),
+    new Swap("0x2", "John", "DOGE", "BUY", 3, 3, 220)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
-  startInventory: { DOGE: 40 },
-  profitThreshold: 2.0,
+  startInventory: { DOGE: 30 },
+  profitThreshold: 0.94,
   hint: "There are TWO opportunities here: Steve SELLS and John BUYS. Sandwich each in the right direction — SELL-then-BUY around Steve, BUY-then-SELL around John — and order the block so both sandwiches nest cleanly without cancelling each other out.",
 };
 
@@ -299,14 +301,11 @@ const LEVEL_4: Level = {
 
 const LEVEL_5: Level = {
   // SUPER BIG BUY-SIDE:
-  pools: [{ asset: "DOGE", price: 70 }],
+  pools: [{ asset: "DOGE", price: 30 }],
   victims: [
-    new Swap("0x1", "Steve", "DOGE", "BUY", 6, 180),
-    new Swap("0x1", "Steve", "DOGE", "BUY", 4, 280),
-    new Swap("0x1", "Steve", "DOGE", "BUY", 24, 480),
-    new Swap("0x1", "Steve", "DOGE", "BUY", 9, 500),
-    new Swap("0x1", "Steve", "DOGE", "BUY", 7, 600),
-    new Swap("0x2", "John", "DOGE", "BUY", 10, 700, 300)
+    new Swap("0x1", "Jenks", "DOGE", "BUY", 10, 8, 300),
+    new Swap("0x4", "Martin", "DOGE", "BUY", 10, 7, 300),
+    new Swap("0x2", "Kodi", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 80 },
@@ -324,8 +323,8 @@ const LEVEL_6: Level = {
   victims: [
     new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
     new Swap("0x2", "Vitalik", "DOGE", "BUY", 10, 6, 300),
-    new Swap("0x4", "", "DOGE", "BUY", 10, 6, 300),
-    new Swap("0x5", "John", "DOGE", "BUY", 10, 6, 300),
+    new Swap("0x4", "Martin", "DOGE", "BUY", 10, 6, 300),
+    new Swap("0x5", "Bob", "DOGE", "BUY", 10, 6, 300),
     new Swap("0x5", "John", "DOGE", "BUY", 10, 6, 300),
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
@@ -720,12 +719,17 @@ function drawGraph(level: Level, execFrac?: number): void {
     const lim = s.txn.limitPrice();
     if (lim === undefined) continue;
     const { xL, xR } = edgesOf(s.el);
-    // `lim.other` is always the lower-priced edge of the swap's sweep band; the
-    // revert cutoff renders on that lower edge (more intuitive to watch).
-    const y = yOf(lim.other);
-    const yOther = yOf(lim.limit);
+    // The hard revert cutoff sits on the edge the victim is squeezed AGAINST:
+    //   BUY  reverts if price is too HIGH → cutoff is the LOWER edge (lim.other),
+    //        revert zone shades ABOVE it.
+    //   SELL reverts if price is too LOW  → cutoff is the HIGHER edge (lim.limit),
+    //        revert zone shades BELOW it.
+    // The opposite edge is the thin context line (the far side of the sweep band).
+    const isBuy = s.txn.side === "BUY";
+    const y = yOf(isBuy ? lim.other : lim.limit);
+    const yOther = yOf(isBuy ? lim.limit : lim.other);
     ctx.fillStyle = "rgba(240,80,110,0.16)";
-    if (s.txn.side === "BUY") ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
+    if (isBuy) ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
     else ctx.fillRect(xL, y, xR - xL, Math.max(0, padT + plotH - y));
     // thin edge line for context (the other side of the sweep band)
     ctx.strokeStyle = "rgba(240,80,110,0.6)";
@@ -925,7 +929,7 @@ function renderInventory(level: Level, state: State): void {
     // Flag exposure only when a holding has DRIFTED from where it started — a
     // held starting bag is working capital, not exposure; an unbalanced sandwich
     // (mid-play, or left unwound at the end) is.
-    if (asset !== USDC && Math.abs(amount - init.balance("PLAYER", asset)) > 1e-9)
+    if (asset !== USDC && Math.abs(amount - init.balance("PLAYER", asset)) > 0.019)
       row.classList.add("exposed");
     const a = document.createElement("span");
     a.className = "inv-asset";
@@ -1235,15 +1239,22 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
     warn = `<div class="result-warn">Your inventory didn't return to where it started.\nYou have ${list}. Trade back to your starting inventory to lock in your profit and avoid exposure to the next block's price move!</div>`;
   }
 
-  // Did the player clear the level's profit bar? That gates the "Next Level"
-  // button; falling short shows the level's hardcoded hint and a "Try Again".
-  const passed = settlement.botProfit >= level.profitThreshold - 1e-9;
+  // Did the player clear the level's profit bar AND unwind back to their
+  // starting inventory? Both are required to pass — leaving risky assets on the
+  // book means you're exposed to the next block, so that's a loss, not a win.
+  // Either failure gates the "Next Level" button behind a "Try Again".
+  const passed =
+    settlement.botProfit >= level.profitThreshold - 1e-9 && exposed.length === 0;
   const levelIdx = LEVELS.indexOf(level);
   const hasNext = levelIdx >= 0 && levelIdx < LEVELS.length - 1;
 
-  const hintHtml = passed
-    ? ""
-    : `<div class="result-warn result-hint">💡 ${level.hint}</div>`;
+  // Show the level's strategy hint only when they actually fell short on
+  // profit. If the profit bar is cleared and the only thing blocking a pass is
+  // leftover inventory, the `warn` block above already says exactly what to fix.
+  const missedProfit = settlement.botProfit < level.profitThreshold - 1e-9;
+  const hintHtml = missedProfit
+    ? `<div class="result-warn result-hint">💡 ${level.hint}</div>`
+    : "";
   const buttonHtml = passed
     ? hasNext
       ? `<button id="result-next">Next Level →</button>`
