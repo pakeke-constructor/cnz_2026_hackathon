@@ -898,7 +898,7 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
     renderInventory(level, exec.state);
     currentExecution = null;
     document.body.classList.remove("playing");
-    if (mode === "submit") showResult(level, exec.sims[exec.sims.length - 1].stateAfter);
+    showResult(level, exec.sims, mode);
   };
   exec.raf = requestAnimationFrame(tick);
 }
@@ -911,39 +911,56 @@ function hideResult(): void {
   if (box) box.classList.add("hidden");
 }
 
-function showResult(level: Level, finalState: State): void {
+function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "submit"): void {
+  const finalState = sims[sims.length - 1].stateAfter;
   const startUSDC = initialState(level).balance("PLAYER", USDC);
   const endUSDC = finalState.balance("PLAYER", USDC);
   const profit = Math.round(endUSDC - startUSDC);
-
-  // Any non-USDC asset still on the books = unhedged price exposure next block.
+  const transactions = sims.filter((sim) => !(sim.txn instanceof Noop));
+  const gasFees = transactions.length * 3;
+  const victimLoss = Math.round(transactions.reduce((total, sim) => {
+    const txn = sim.txn;
+    if (txn.owner === "PLAYER" || !(txn instanceof Swap)) return total;
+    const initialPrice = level.pools.find((p) => p.asset === txn.asset)?.price ?? 0;
+    const executionPrice = txn.side === "BUY"
+      ? sim.stateBefore.price(txn.asset) + txn.qty / 2
+      : sim.stateBefore.price(txn.asset) - txn.qty / 2;
+    const loss = txn.side === "BUY"
+      ? (executionPrice - initialPrice) * txn.qty
+      : (initialPrice - executionPrice) * txn.qty;
+    return total + Math.max(0, loss);
+  }, 0));
   const exposed = level.pools
     .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
     .filter((x) => Math.abs(x.amt) > 1e-9);
-
-  const box = document.getElementById("result") as HTMLElement;
-  const sign = profit > 0 ? "+" : profit < 0 ? "−" : "";
+  const hash = `0x9984954${Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, "0")}`;
   const cls = profit > 0 ? "win" : profit < 0 ? "loss" : "flat";
-  const verb = profit > 0 ? "You extracted" : profit < 0 ? "You lost" : "You netted";
-
+  const sign = profit > 0 ? "+" : profit < 0 ? "−" : "";
+  const money = (value: number) => `$${Math.abs(value).toLocaleString()}`;
   let warn = "";
   if (exposed.length) {
-    const list = exposed
-      .map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`)
-      .join(", ");
-    warn = `<div class="result-warn">⚠️ You're still holding ${list}. That's
-      unhedged exposure to next block's price — sell back to USDC to lock it in.</div>`;
+    const list = exposed.map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`).join(", ");
+    warn = `<div class="result-warn">You're still holding ${list}. This is exposed to price movement in the next block. Sell back to USDC to lock in your profit.</div>`;
   }
 
-  box.className = `result-${cls}`; // (also clears the "hidden" class)
-  box.innerHTML = `
-    <div class="result-title">${verb}</div>
-    <div class="result-profit">${sign}$${Math.abs(profit).toLocaleString()}</div>
+  const box = document.getElementById("result") as HTMLElement;
+  box.className = `result-${cls}`;
+  box.innerHTML = `<div class="result-card">
+    <div class="result-title">${mode === "simulate" ? "Simulated" : "Submitted"} block</div>
+    <div class="result-hash">${hash}</div>
+    <div class="result-profit">${sign}${money(profit)} bot funds gained</div>
+    <div class="result-grid">
+      <div class="result-row"><span>Victim funds lost</span><strong>${money(victimLoss)}</strong></div>
+      <div class="result-row"><span>Bot funds gained</span><strong>${money(profit)}</strong></div>
+      <div class="result-row"><span>Total gas fees</span><strong>${money(gasFees)}</strong></div>
+      <div class="result-row"><span>Transactions executed</span><strong>${transactions.length}</strong></div>
+    </div>
     ${warn}
-    <button id="result-close">Keep going</button>`;
+    <button id="result-close">Back to block builder</button>
+  </div>`;
   (document.getElementById("result-close") as HTMLElement).onclick = () => {
     hideResult();
-    drawGraph(level); // back to the interactive, fully-revealed graph
+    drawGraph(level);
   };
 }
 
