@@ -904,8 +904,26 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
 }
 
 // ---------------------------------------------------------------------
-// Result summary (shown after a Submit run completes).
+// Result summary (shown after an execution completes).
 // ---------------------------------------------------------------------
+const VALIDATOR_BRIBE_RATE = 0.98;
+
+interface Settlement {
+  readonly grossGains: number;
+  readonly gasFees: number;
+  readonly profitBeforeBribe: number;
+  readonly validatorBribe: number;
+  readonly botProfit: number;
+}
+
+function calculateSettlement(grossGains: number, transactionCount: number): Settlement {
+  const gasFees = transactionCount * 0.3;
+  const profitBeforeBribe = grossGains - gasFees;
+  const validatorBribe = Math.max(0, profitBeforeBribe) * VALIDATOR_BRIBE_RATE;
+  const botProfit = profitBeforeBribe - validatorBribe;
+  return { grossGains, gasFees, profitBeforeBribe, validatorBribe, botProfit };
+}
+
 function hideResult(): void {
   const box = document.getElementById("result");
   if (box) box.classList.add("hidden");
@@ -915,18 +933,16 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   const finalState = sims[sims.length - 1].stateAfter;
   const startUSDC = initialState(level).balance("PLAYER", USDC);
   const endUSDC = finalState.balance("PLAYER", USDC);
-  const totalGains = Math.round(endUSDC - startUSDC);
-  const transactions = sims.filter((sim) => (sim.txn.owner == "PLAYER") && !(sim.txn instanceof Noop));
-  const gasFees = transactions.length * 0.3;
-  const profit = totalGains - gasFees;
-  const victimLoss = Math.max(0, totalGains);
+  const transactions = sims.filter((sim) => sim.txn.owner === "PLAYER" && !(sim.txn instanceof Noop));
+  const settlement = calculateSettlement(endUSDC - startUSDC, transactions.length);
+  const victimLoss = Math.max(0, settlement.grossGains);
   const exposed = level.pools
     .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
     .filter((x) => Math.abs(x.amt) > 1e-9);
   const hash = `0x9984954${Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, "0")}`;
-  const cls = profit > 0 ? "win" : profit < 0 ? "loss" : "flat";
-  const sign = profit > 0 ? "+" : profit < 0 ? "−" : "";
-  const money = (value: number) => `$${Math.abs(value).toLocaleString()}`;
+  const cls = settlement.botProfit > 0 ? "win" : settlement.botProfit < 0 ? "loss" : "flat";
+  const sign = settlement.botProfit > 0 ? "+" : settlement.botProfit < 0 ? "−" : "";
+  const money = (value: number) => `$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   let warn = "";
   if (exposed.length) {
     const list = exposed.map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`).join(", ");
@@ -938,11 +954,13 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   box.innerHTML = `<div class="result-card">
     <div class="result-title">${mode === "simulate" ? "Simulated" : "Submitted"} block</div>
     <div class="result-hash">${hash}</div>
-    <div class="result-profit">${sign}${money(profit)} bot funds gained</div>
+    <div class="result-profit">${sign}${money(settlement.botProfit)} bot profit</div>
     <div class="result-grid">
       <div class="result-row"><span>Victim funds lost</span><strong>${money(victimLoss)}</strong></div>
-      <div class="result-row"><span>Bot funds gained</span><strong>${money(profit)}</strong></div>
-      <div class="result-row"><span>Total gas fees</span><strong>${money(gasFees)}</strong></div>
+      <div class="result-row"><span>Profit before bribe</span><strong>${money(settlement.profitBeforeBribe)}</strong></div>
+      <div class="result-row"><span>Validator bribe (96%)</span><strong>−${money(settlement.validatorBribe)}</strong></div>
+      <div class="result-row"><span>Bot profit after bribe</span><strong>${money(settlement.botProfit)}</strong></div>
+      <div class="result-row"><span>Total gas fees</span><strong>${money(settlement.gasFees)}</strong></div>
       <div class="result-row"><span>Transactions executed</span><strong>${transactions.length}</strong></div>
     </div>
     ${warn}
