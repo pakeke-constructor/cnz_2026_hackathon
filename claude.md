@@ -103,10 +103,10 @@ class Level {
 }
 
 class LP {
-    asset1: string
-    asset2: string
-    pool1: number
-    pool2: number
+    // Linear AMM: a pool's entire state is just its current price.
+    // (Slope is 1 for now: buying 1 DOGE moves price +1, selling 1 DOGE moves price -1.)
+    asset: string
+    price: number
 }
 
 type Owner = string // "PLAYER" refers to the player's ownership
@@ -143,3 +143,94 @@ class Swap extends Transaction {
 }
 
 ```
+
+## Discrete price binning, with a linear AMM:
+
+A linear AMM with discrete values works well, and it's a *great* simplification for teaching. 
+
+
+### Why it works well:
+What's great is that we can make the prices discrete: e.g. in the range 1 to 30.
+From there, the player can size there order easily with discrete values on a slider. No need to 
+
+
+### The trap: If you price trades naively, there's an infinite money glitch:
+The trap: charging the **spot price** for the whole trade. Say price = 100, buying 10 DOGE moves it
+to 110.
+
+- Buy 10 DOGE "at 100" → pay **1000**, price → 110.
+- Sell 10 DOGE "at 110" → get **1100**, price → 100.
+- **Net: +100 for free.** No victim, no risk. That's your infinite money glitch (it's `q²` every
+  round trip).
+
+The bug is that you bought the *whole* block at the old price but sold it at the new price. Real
+markets don't let you do that — you walk the price as you trade.
+
+### The fix: charge the average price of the move (the trapezoid)
+
+A trade sweeps the price from `p` to `p ± q`, so you pay/receive the **average** over that sweep:
+
+```
+Buy  q DOGE:  cost     = q · (p + q/2),   price → p + q
+Sell q DOGE:  proceeds = q · (p − q/2),   price → p − q
+```
+
+Same example, done right:
+- Buy 10 at avg (100+110)/2 = 105 → pay **1050**, price → 110.
+- Sell 10 at avg (110+100)/2 = 105 → get **1050**, price → 100.
+- **Net: 0.** Glitch gone.
+
+### Why this is provably glitch-free
+
+With average pricing, the USDC needed to move a pool's price from `a` to `b` is exactly
+`(b² − a²)/2`. That's a **state function** — it depends only on the start and end price, never on the
+path. So *any* sequence of trades that returns the price to where it started nets exactly zero USDC.
+There is no closed loop that prints money. Profit is only possible when *someone else* moves the price
+between your buy and your sell — which is precisely MEV. That's the property you want, and it's
+mathematically guaranteed, not just "seems fine."
+
+Quick sandwich sanity check with a victim in the middle (price 100):
+
+| step | trade | avg price | USDC | price after |
+|---|---|---|---|---|
+| you front-run | buy 10 | 105 | −1050 | 110 |
+| victim | buy 20 | 120 | (pays 2400) | 130 |
+| you back-run | sell 10 | 125 | +1250 | 120 |
+
+Your profit = **+200**, you end holding 0 DOGE, and it came entirely from the victim's price push.
+Remove the victim and you'd net exactly 0. Correct on both counts.
+
+
+### Two small guardrails
+
+1. **Keep price above 0.** Selling pushes price down linearly, so a big enough sell (or a level that
+   allows it) could cross zero and make the trapezoid math go weird. Design levels so price stays
+   positive, or floor it.
+2. **You can drop pool reserves entirely.** The linear pool doesn't need `pool1/pool2` — its whole
+   state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class
+   to basically `{ asset, price }`.
+
+### Is this actually different from a traditional xy=k AMM?
+
+**Two ways yes, one important way no.**
+
+**No (the part that matters for safety):** xy=k is *also* glitch-free, for the exact same reason. In
+both models the cost of a trade is the area under a price curve, which makes it a state function —
+round trips net zero in xy=k too. So switching to linear is **not** fixing a glitch in xy=k. xy=k was
+never glitchy. The real reason to switch is *not* safety.
+
+**Yes (the shape):** they're different curves.
+- **xy=k is a hyperbola.** Price = ratio of reserves. Price impact *accelerates* — the more you buy,
+  the more each additional unit costs, and price can approach 0 or ∞ but never reach them.
+  Self-bounding.
+- **Linear is a straight line.** Every DOGE moved shifts price by the same fixed amount, no matter the
+  current price. Constant impact. Price *can* cross zero (hence the floor guardrail).
+
+**Yes (why we actually want it):** the real reason to pick linear is **simplicity and teachability**:
+- "Buy 10 → price +10" is mental math a player groks instantly. xy=k requires explaining reserve
+  ratios.
+- It lines up perfectly with **discrete integer bins** — trapezoid areas stay clean round numbers.
+- No reserves to track; a pool's entire state is one number, `price`.
+
+So: same *family* (both conservative bonding curves, both glitch-free), different *shape* (straight vs
+hyperbolic), and we choose straight because it's the one a hackathon player can follow in their head.
