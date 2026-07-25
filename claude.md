@@ -151,13 +151,15 @@ A linear AMM with discrete values works well, and it's a *great* simplification 
 
 ### Why it works well:
 What's great is that we can make the prices discrete: e.g. in the range 1 to 30.
-From there, the player can size there order easily with discrete values on a slider. No need to 
+From there, the player can size orders easily with discrete values on a slider.
+
+IMPORTANTLY: The player doesn't need to calculate the exact price directly.
+They use a slider, and *watch* how their trade affects the graph; and they see exactly when the victim's trade gets cancelled.
+The graph visualization is key here. The player should see the price at each point in time.
 
 
-### The trap: If you price trades naively, there's an infinite money glitch:
-The trap: charging the **spot price** for the whole trade. Say price = 100, buying 10 DOGE moves it
-to 110.
-
+### The trap: If we price trades naively, there's an infinite money glitch:
+The trap: charging the **spot price** for the whole trade. Say price = 100, buying 10 DOGE moves it to 110.
 - Buy 10 DOGE "at 100" → pay **1000**, price → 110.
 - Sell 10 DOGE "at 110" → get **1100**, price → 100.
 - **Net: +100 for free.** No victim, no risk. That's your infinite money glitch (it's `q²` every
@@ -167,9 +169,7 @@ The bug is that you bought the *whole* block at the old price but sold it at the
 markets don't let you do that — you walk the price as you trade.
 
 ### The fix: charge the average price of the move (the trapezoid)
-
 A trade sweeps the price from `p` to `p ± q`, so you pay/receive the **average** over that sweep:
-
 ```
 Buy  q DOGE:  cost     = q · (p + q/2),   price → p + q
 Sell q DOGE:  proceeds = q · (p − q/2),   price → p − q
@@ -204,33 +204,7 @@ Remove the victim and you'd net exactly 0. Correct on both counts.
 ### Two small guardrails
 
 1. **Keep price above 0.** Selling pushes price down linearly, so a big enough sell (or a level that
-   allows it) could cross zero and make the trapezoid math go weird. Design levels so price stays
-   positive, or floor it.
+   allows it) could cross zero and make the trapezoid math go weird. Design levels so price stays positive, or floor it.
 2. **You can drop pool reserves entirely.** The linear pool doesn't need `pool1/pool2` — its whole
-   state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class
-   to basically `{ asset, price }`.
+   state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class to basically `{ asset, price }`.
 
-### Is this actually different from a traditional xy=k AMM?
-
-**Two ways yes, one important way no.**
-
-**No (the part that matters for safety):** xy=k is *also* glitch-free, for the exact same reason. In
-both models the cost of a trade is the area under a price curve, which makes it a state function —
-round trips net zero in xy=k too. So switching to linear is **not** fixing a glitch in xy=k. xy=k was
-never glitchy. The real reason to switch is *not* safety.
-
-**Yes (the shape):** they're different curves.
-- **xy=k is a hyperbola.** Price = ratio of reserves. Price impact *accelerates* — the more you buy,
-  the more each additional unit costs, and price can approach 0 or ∞ but never reach them.
-  Self-bounding.
-- **Linear is a straight line.** Every DOGE moved shifts price by the same fixed amount, no matter the
-  current price. Constant impact. Price *can* cross zero (hence the floor guardrail).
-
-**Yes (why we actually want it):** the real reason to pick linear is **simplicity and teachability**:
-- "Buy 10 → price +10" is mental math a player groks instantly. xy=k requires explaining reserve
-  ratios.
-- It lines up perfectly with **discrete integer bins** — trapezoid areas stay clean round numbers.
-- No reserves to track; a pool's entire state is one number, `price`.
-
-So: same *family* (both conservative bonding curves, both glitch-free), different *shape* (straight vs
-hyperbolic), and we choose straight because it's the one a hackathon player can follow in their head.
