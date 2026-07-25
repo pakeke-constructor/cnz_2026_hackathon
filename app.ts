@@ -1,14 +1,23 @@
 // =====================================================================
 // MEV Searcher — MVP
-// Goals for this pass:
-//   1. Mempool of victim transactions, draggable.
-//   2. Player transactions (BUY DOGE / SELL DOGE), draggable in from a palette.
-//   3. Price graph at the top whose X axis lines up EXACTLY with the block's
-//      transaction boxes (time = transaction position, left-to-right).
 //
-// ARCHITECTURE NOTE (per project spec): all domain state is IMMUTABLE.
-// Simulation walks a fresh State forward one transaction at a time, returning
-// a new State each step. Nothing mutates in place.
+// You are an MEV searcher. Reorder the victim transactions in the public
+// mempool and insert your own trades to extract profit. The price graph at
+// the top lines up EXACTLY with the block boxes below (X = execution order).
+//
+// ARCHITECTURE (per CLAUDE.md): all domain state is IMMUTABLE.
+//   State           — a snapshot of the chain (pools + balances). Never mutates;
+//                     every helper returns a NEW State.
+//   Transaction     — abstract; owns `simulate(s: State): State` ("step forward
+//                     one transaction"). Subtypes (Swap, later FlashLoan,
+//                     Liquidate) each carry their own effect. Simulation logic
+//                     lives HERE, not in State — that's what lets new tx types
+//                     drop in without touching the engine.
+//   PlayerTxnMeta   — a factory for player order types. `generate(qty)` mints a
+//                     fresh Transaction. The sidebar palette is built from a
+//                     level's list of these.
+//   Level           — seed pools + victim transactions + which player ops are
+//                     allowed.
 // =====================================================================
 
 // Sortable is loaded globally from the CDN <script> in index.html.
@@ -19,180 +28,252 @@ declare const Sortable: any;
 // ---------------------------------------------------------------------
 type Owner = string; // "PLAYER" is the player; others are victims.
 type Asset = string;
-
 type Side = "BUY" | "SELL";
 
-// A transaction. In this MVP every transaction is a swap of DOGE vs USDC,
-// expressed as the intuitive "Buy DOGE" / "Sell DOGE".
-interface Txn {
-  readonly id: string;
-  readonly owner: Owner;
-  readonly side: Side;   // BUY = buy DOGE with USDC; SELL = sell DOGE for USDC
-  readonly asset: Asset; // "DOGE" for now
-  readonly qty: number;  // amount of DOGE bought/sold
-}
+const USDC: Asset = "USDC"; // the numeraire every pool is quoted in.
 
 // Linear AMM pool: its ENTIRE state is a current price (slope = 1).
+// BUY(DOGE) == swap USDC -> DOGE and pushes price up; SELL pushes it down.
 interface LP {
   readonly asset: Asset;
   readonly price: number;
 }
 
-// Immutable blockchain state that "walks forward" as transactions execute.
+// ---------------------------------------------------------------------
+// State — immutable chain snapshot. Every mutator returns a new State.
+// ---------------------------------------------------------------------
 class State {
-  readonly pools: ReadonlyMap<Asset, LP>;
-  // balances[owner][asset] = amount. USDC is the numeraire.
-  readonly balances: ReadonlyMap<Owner, ReadonlyMap<Asset, number>>;
-
   constructor(
-    pools: ReadonlyMap<Asset, LP>,
-    balances: ReadonlyMap<Owner, ReadonlyMap<Asset, number>>
-  ) {
-    this.pools = pools;
-    this.balances = balances;
-  }
+    readonly pools: ReadonlyMap<Asset, LP>,
+    readonly balances: ReadonlyMap<Owner, ReadonlyMap<Asset, number>>
+  ) {}
 
   price(asset: Asset): number {
-    const lp = this.pools.get(asset);
-    return lp ? lp.price : NaN;
+    return this.pools.get(asset)?.price ?? NaN;
   }
 
-  // Apply one transaction, returning a NEW State (no mutation).
-  //
-  // Trapezoid (average-price) fill — this is what makes the game glitch-free:
-  //   Buy  q: cost     = q * (p + q/2), price -> p + q
-  //   Sell q: proceeds = q * (p - q/2), price -> p - q
-  // Because moving a pool from price a->b always costs (b^2 - a^2)/2 (a state
-  // function), any loop that returns the price to its start nets exactly 0.
-  step(txn: Txn): State {
-    const lp = this.pools.get(txn.asset);
-    if (!lp) return this;
+  balance(owner: Owner, asset: Asset): number {
+    return this.balances.get(owner)?.get(asset) ?? 0;
+  }
 
-    const p = lp.price;
-    const q = txn.qty;
+  // Return a copy with `asset`'s pool set to `price`.
+  withPrice(asset: Asset, price: number): State {
+    const pools = new Map(this.pools);
+    pools.set(asset, { asset, price });
+    return new State(pools, this.balances);
+  }
 
-    let newPrice: number;
-    let dUSDC: number;   // change to owner's USDC
-    let dAsset: number;  // change to owner's DOGE
-
-    if (txn.side === "BUY") {
-      const cost = q * (p + q / 2);
-      newPrice = p + q;
-      dUSDC = -cost;
-      dAsset = +q;
-    } else {
-      const proceeds = q * (p - q / 2);
-      newPrice = Math.max(0, p - q); // guardrail: keep price >= 0
-      dUSDC = +proceeds;
-      dAsset = -q;
-    }
-
-    const newPools = new Map(this.pools);
-    newPools.set(txn.asset, { asset: txn.asset, price: newPrice });
-
-    const newBalances = new Map<Owner, ReadonlyMap<Asset, number>>(this.balances);
-    const prev = this.balances.get(txn.owner) ?? new Map<Asset, number>();
-    const nextOwner = new Map<Asset, number>(prev);
-    nextOwner.set("USDC", (prev.get("USDC") ?? 0) + dUSDC);
-    nextOwner.set(txn.asset, (prev.get(txn.asset) ?? 0) + dAsset);
-    newBalances.set(txn.owner, nextOwner);
-
-    return new State(newPools, newBalances);
+  // Return a copy with `delta` added to one owner/asset balance.
+  credit(owner: Owner, asset: Asset, delta: number): State {
+    const balances = new Map(this.balances);
+    const prev = balances.get(owner) ?? new Map<Asset, number>();
+    const next = new Map(prev);
+    next.set(asset, (prev.get(asset) ?? 0) + delta);
+    balances.set(owner, next);
+    return new State(this.pools, balances);
   }
 }
 
 // ---------------------------------------------------------------------
-// Level definition (MVP: level 1 — classic buy-side sandwich, 1 victim)
+// Transactions — the effect lives on the transaction itself.
+// ---------------------------------------------------------------------
+abstract class Transaction {
+  constructor(readonly id: string, readonly owner: Owner) {}
+
+  // Step the chain forward by this one transaction, returning a NEW State.
+  abstract simulate(s: State): State;
+
+  // Human-readable action for the UI, e.g. "Buy DOGE".
+  abstract label(): string;
+}
+
+// A swap against a USDC-quoted linear pool, expressed intuitively as
+// "Buy DOGE" / "Sell DOGE" rather than raw assetIn/assetOut.
+//
+// Trapezoid (average-price) fill — this is what makes the game glitch-free:
+//   Buy  q: cost     = q * (p + q/2), price -> p + q
+//   Sell q: proceeds = q * (p - q/2), price -> p - q
+// Moving a pool from price a->b always costs (b^2 - a^2)/2, a state function,
+// so any loop that returns the price to its start nets exactly 0. Profit is
+// only possible when someone ELSE moves the price between your buy and sell —
+// which is precisely MEV.
+class Swap extends Transaction {
+  constructor(
+    id: string,
+    owner: Owner,
+    readonly asset: Asset,
+    readonly side: Side,
+    readonly qty: number
+  ) {
+    super(id, owner);
+  }
+
+  simulate(s: State): State {
+    const p = s.price(this.asset);
+    const q = this.qty;
+
+    if (this.side === "BUY") {
+      const cost = q * (p + q / 2);
+      return s
+        .withPrice(this.asset, p + q)
+        .credit(this.owner, USDC, -cost)
+        .credit(this.owner, this.asset, +q);
+    } else {
+      const proceeds = q * (p - q / 2);
+      return s
+        .withPrice(this.asset, Math.max(0, p - q)) // guardrail: price >= 0
+        .credit(this.owner, USDC, +proceeds)
+        .credit(this.owner, this.asset, -q);
+    }
+  }
+
+  label(): string {
+    return `${this.side === "BUY" ? "Buy" : "Sell"} ${this.asset}`;
+  }
+
+  // Immutable "edit": a copy of this swap with a new quantity.
+  withQty(qty: number): Swap {
+    return new Swap(this.id, this.owner, this.asset, this.side, qty);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Player order factories — the sidebar palette is built from these.
+// ---------------------------------------------------------------------
+abstract class PlayerTxnMeta {
+  abstract generate(qty: number): Transaction;
+  abstract label(): string;
+}
+
+class BUY extends PlayerTxnMeta {
+  constructor(readonly asset: Asset) { super(); }
+  generate(qty: number): Transaction {
+    return new Swap(newId("p"), "PLAYER", this.asset, "BUY", qty);
+  }
+  label(): string { return `Buy ${this.asset}`; }
+}
+
+class SELL extends PlayerTxnMeta {
+  constructor(readonly asset: Asset) { super(); }
+  generate(qty: number): Transaction {
+    return new Swap(newId("p"), "PLAYER", this.asset, "SELL", qty);
+  }
+  label(): string { return `Sell ${this.asset}`; }
+}
+
+// ---------------------------------------------------------------------
+// Levels
 // ---------------------------------------------------------------------
 interface Level {
-  readonly startPrice: number;
-  readonly victims: readonly Txn[];
-  readonly allowed: readonly Side[]; // which player operations are offered
+  readonly pools: readonly LP[];
+  readonly victims: readonly Transaction[];
+  readonly allowedOperations: readonly PlayerTxnMeta[];
 }
 
 const LEVEL_1: Level = {
-  startPrice: 100,
-  victims: [
-    { id: "v1", owner: "Alice", side: "BUY", asset: "DOGE", qty: 20 },
-  ],
-  allowed: ["BUY", "SELL"],
+  // Classic buy-side sandwich, 1 victim.
+  pools: [{ asset: "DOGE", price: 100 }],
+  victims: [new Swap("v1", "Alice", "DOGE", "BUY", 20)],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
 };
 
 function initialState(level: Level): State {
-  const pools = new Map<Asset, LP>([["DOGE", { asset: "DOGE", price: level.startPrice }]]);
+  const pools = new Map<Asset, LP>(level.pools.map((p) => [p.asset, p]));
   const balances = new Map<Owner, ReadonlyMap<Asset, number>>([
-    ["PLAYER", new Map<Asset, number>([["USDC", 100000], ["DOGE", 0]])],
+    ["PLAYER", new Map<Asset, number>([[USDC, 100000]])],
   ]);
   return new State(pools, balances);
 }
 
 // ---------------------------------------------------------------------
-// Simulation: walk the block, record price after each transaction.
-// Returns the price trajectory used to draw the graph.
+// Simulation: walk the block, record the pool price after each transaction.
+// (Single-pool MVP: we chart the first pool's asset.)
 // ---------------------------------------------------------------------
-interface SimPoint {
-  readonly price: number; // DOGE price AFTER this transaction executes
-  readonly txnId: string;
+interface SimResult {
+  readonly start: number;          // pool price before the block
+  readonly prices: readonly number[]; // pool price AFTER each transaction
+  readonly finalState: State;
 }
 
-function simulate(level: Level, block: readonly Txn[]): { start: number; points: SimPoint[] } {
+function simulate(level: Level, block: readonly Transaction[]): SimResult {
+  const chartAsset = level.pools[0].asset;
   let s = initialState(level);
-  const points: SimPoint[] = [];
+  const prices: number[] = [];
   for (const txn of block) {
-    s = s.step(txn);
-    points.push({ price: s.price("DOGE"), txnId: txn.id });
+    s = txn.simulate(s);
+    prices.push(s.price(chartAsset));
   }
-  return { start: level.startPrice, points };
+  return { start: level.pools[0].price, prices, finalState: s };
 }
 
 // ---------------------------------------------------------------------
-// DOM helpers / rendering
+// DOM: the block's DOM order is the source of truth for ORDER; `txnById`
+// is the source of truth for DATA. Rendering just reflects those two.
 // ---------------------------------------------------------------------
 let seq = 0;
 function newId(prefix: string): string {
   return `${prefix}${++seq}`;
 }
 
-// Registry mapping a DOM element's data-id -> the Txn it represents.
-// The DOM (via Sortable) owns ORDER; this map owns the DATA.
-const txnById = new Map<string, Txn>();
+const txnById = new Map<string, Transaction>();
 
-function txnEl(txn: Txn, opts: { victim?: boolean; template?: boolean } = {}): HTMLElement {
+// Build a box for a transaction. `editable` player boxes get a qty slider.
+function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } = {}): HTMLElement {
+  const swap = txn as Swap;
   const el = document.createElement("div");
-  el.className = "txn " + (txn.side === "BUY" ? "buy" : "sell");
+  el.className = "txn " + (swap.side === "BUY" ? "buy" : "sell");
   if (opts.victim) el.classList.add("victim");
-  if (opts.template) el.classList.add("template");
   el.dataset.id = txn.id;
 
   const action = document.createElement("div");
   action.className = "action";
-  action.textContent = `${txn.side === "BUY" ? "Buy" : "Sell"} ${txn.asset}`;
+  action.textContent = txn.label();
 
   const amt = document.createElement("div");
   amt.className = "amt";
-  amt.textContent = `${txn.qty} ${txn.asset}`;
+  amt.textContent = `${swap.qty} ${swap.asset}`;
 
   const owner = document.createElement("div");
   owner.className = "owner";
-  owner.textContent = opts.template ? "you (drag to add)" : txn.owner;
+  owner.textContent = opts.victim ? txn.owner : "you";
 
   el.append(action, amt, owner);
+
+  if (opts.editable) {
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "qty";
+    slider.min = "0";
+    slider.max = "40";
+    slider.step = "1";
+    slider.value = String(swap.qty);
+    slider.addEventListener("input", () => {
+      const q = Number(slider.value);
+      const cur = txnById.get(txn.id) as Swap;
+      txnById.set(txn.id, cur.withQty(q)); // immutable edit
+      amt.textContent = `${q} ${swap.asset}`;
+      drawGraph(currentLevel);
+    });
+    el.appendChild(slider);
+  }
+
   return el;
 }
 
-// Read the current block order straight from the DOM and resolve to Txns.
-function readBlock(blockArea: HTMLElement): Txn[] {
-  const out: Txn[] = [];
+// Read the block order straight from the DOM and resolve to Transactions.
+function readBlock(blockArea: HTMLElement): Transaction[] {
+  const out: Transaction[] = [];
   for (const child of Array.from(blockArea.children)) {
     const id = (child as HTMLElement).dataset.id;
-    if (id && txnById.has(id)) out.push(txnById.get(id)!);
+    const txn = id ? txnById.get(id) : undefined;
+    if (txn) out.push(txn);
   }
   return out;
 }
 
 // ---------------------------------------------------------------------
-// Graph: price over the block. X positions line up EXACTLY with the
-// transaction boxes below by measuring each box's on-screen center.
+// Graph: price over the block. X positions are measured from the actual
+// transaction boxes so the line lines up EXACTLY with each box's center.
 // ---------------------------------------------------------------------
 const graph = document.getElementById("graph") as HTMLCanvasElement;
 const graphWrap = document.getElementById("graph-wrap") as HTMLElement;
@@ -209,10 +290,10 @@ function drawGraph(level: Level): void {
   ctx.clearRect(0, 0, cssW, cssH);
 
   const block = readBlock(blockArea);
-  const { start, points } = simulate(level, block);
+  const { start, prices } = simulate(level, block);
 
   // ----- Y scale: fit all prices with a little headroom -----
-  const allPrices = [start, ...points.map((p) => p.price)];
+  const allPrices = [start, ...prices];
   const pMin = Math.min(...allPrices);
   const pMax = Math.max(...allPrices);
   const pad = Math.max(2, (pMax - pMin) * 0.15);
@@ -222,18 +303,16 @@ function drawGraph(level: Level): void {
   const plotH = cssH - padT - padB;
   const yOf = (price: number) => padT + plotH * (1 - (price - lo) / (hi - lo || 1));
 
-  // ----- X positions: measured from the actual transaction boxes so the
-  // graph lines up EXACTLY with each box's horizontal center. -----
+  // ----- X positions: measured from the real boxes below -----
   const wrapRect = graphWrap.getBoundingClientRect();
   const boxes = Array.from(blockArea.children) as HTMLElement[];
   const xOfIndex = (i: number): number => {
-    // index -1 = the "start" point (before any txn), pinned to the left edge.
-    if (i < 0 || boxes.length === 0) return padL;
+    if (i < 0 || boxes.length === 0) return padL; // -1 = pre-block price
     const r = boxes[i].getBoundingClientRect();
     return r.left + r.width / 2 - wrapRect.left;
   };
 
-  // ----- gridlines: light Y guides + labels -----
+  // ----- gridlines + Y labels -----
   ctx.strokeStyle = "#2a3242";
   ctx.fillStyle = "#8b949e";
   ctx.lineWidth = 1;
@@ -259,17 +338,15 @@ function drawGraph(level: Level): void {
     ctx.stroke();
   }
 
-  // ----- the price line (starts at the pre-block price, steps per txn) -----
+  // ----- price line (starts at pre-block price, steps per txn) -----
   ctx.strokeStyle = "#58a6ff";
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(xOfIndex(-1), yOf(start));
-  for (let i = 0; i < points.length; i++) {
-    ctx.lineTo(xOfIndex(i), yOf(points[i].price));
-  }
+  for (let i = 0; i < prices.length; i++) ctx.lineTo(xOfIndex(i), yOf(prices[i]));
   ctx.stroke();
 
-  // ----- dots at each transaction's resulting price -----
+  // ----- dots at each resulting price -----
   ctx.fillStyle = "#58a6ff";
   const drawDot = (x: number, y: number) => {
     ctx.beginPath();
@@ -277,21 +354,35 @@ function drawGraph(level: Level): void {
     ctx.fill();
   };
   drawDot(xOfIndex(-1), yOf(start));
-  for (let i = 0; i < points.length; i++) drawDot(xOfIndex(i), yOf(points[i].price));
+  for (let i = 0; i < prices.length; i++) drawDot(xOfIndex(i), yOf(prices[i]));
 }
 
 // ---------------------------------------------------------------------
-// Wire up: build level, populate mempool + palette, enable dragging.
+// Wire up: palette (from allowedOperations), mempool (victims), dragging.
 // ---------------------------------------------------------------------
-function buildPaletteTemplates(level: Level): void {
+let currentLevel: Level = LEVEL_1;
+
+// Palette templates carry NO data of their own; each carries the index of the
+// PlayerTxnMeta it spawns. On drop we call that factory's generate().
+function buildPalette(level: Level): void {
   const palette = document.getElementById("palette") as HTMLElement;
   palette.innerHTML = "";
-  for (const side of level.allowed) {
-    // A template is a stand-in; each drag CLONES a fresh transaction.
-    const template: Txn = { id: newId("tpl"), owner: "PLAYER", side, asset: "DOGE", qty: 10 };
-    const el = txnEl(template, { template: true });
+  level.allowedOperations.forEach((meta, i) => {
+    const el = document.createElement("div");
+    el.className = "txn template " + (meta instanceof BUY ? "buy" : "sell");
+    el.dataset.meta = String(i);
+
+    const action = document.createElement("div");
+    action.className = "action";
+    action.textContent = meta.label();
+
+    const hint = document.createElement("div");
+    hint.className = "owner";
+    hint.textContent = "drag to add";
+
+    el.append(action, hint);
     palette.appendChild(el);
-  }
+  });
 }
 
 function buildMempool(level: Level): void {
@@ -306,7 +397,6 @@ function buildMempool(level: Level): void {
 function setupDragging(level: Level): void {
   const mempool = document.getElementById("mempool") as HTMLElement;
   const palette = document.getElementById("palette") as HTMLElement;
-
   const onChange = () => drawGraph(level);
 
   // Block: the ordered list the player submits.
@@ -314,19 +404,18 @@ function setupDragging(level: Level): void {
     group: { name: "txns", pull: true, put: true },
     animation: 150,
     forceFallback: true,
+    filter: "input",           // let the qty slider work without starting a drag
+    preventOnFilter: false,
     onSort: onChange,
-    // When an item is dropped in from the palette it's a template clone;
-    // turn it into a real, uniquely-identified PLAYER transaction.
     onAdd: (evt: any) => {
+      // Dropped in from the palette: replace the template clone with a real,
+      // editable player transaction minted by the corresponding factory.
       if (evt.from === palette) {
         const el: HTMLElement = evt.item;
-        const side: Side = el.classList.contains("buy") ? "BUY" : "SELL";
-        const txn: Txn = { id: newId("p"), owner: "PLAYER", side, asset: "DOGE", qty: 10 };
-        el.dataset.id = txn.id;
-        el.classList.remove("template");
-        const owner = el.querySelector(".owner");
-        if (owner) owner.textContent = "PLAYER";
+        const meta = level.allowedOperations[Number(el.dataset.meta)];
+        const txn = meta.generate(10);
         txnById.set(txn.id, txn);
+        el.replaceWith(txnEl(txn, { editable: true }));
       }
       onChange();
     },
@@ -340,9 +429,7 @@ function setupDragging(level: Level): void {
     onSort: onChange,
   });
 
-  // Palette: a source of templates. pull:'clone' leaves a fresh copy behind
-  // so the palette stays populated; the travelling node becomes a real Txn
-  // in the block's onAdd handler above.
+  // Palette: a source of templates. pull:'clone' leaves the template behind.
   Sortable.create(palette, {
     group: { name: "txns", pull: "clone", put: false },
     sort: false,
@@ -352,12 +439,12 @@ function setupDragging(level: Level): void {
 }
 
 function main(): void {
-  const level = LEVEL_1;
-  buildPaletteTemplates(level);
-  buildMempool(level);
-  setupDragging(level);
-  drawGraph(level);
-  window.addEventListener("resize", () => drawGraph(level));
+  currentLevel = LEVEL_1;
+  buildPalette(currentLevel);
+  buildMempool(currentLevel);
+  setupDragging(currentLevel);
+  drawGraph(currentLevel);
+  window.addEventListener("resize", () => drawGraph(currentLevel));
 }
 
 main();
