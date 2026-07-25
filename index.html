@@ -3,103 +3,257 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MEV Searcher — reorder the block, take the profit</title>
+  <title>MEV Dojo — reorder the block, take the profit</title>
+  <!-- Inline emoji favicon (data URI = no external request). -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2288%22>%E2%9B%A9%EF%B8%8F</text></svg>" />
   <!-- SortableJS: drag & drop for the transaction boxes -->
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
   <style>
+    /* =================================================================
+       DESIGN TOKENS — the single source of colour truth.
+       Backgrounds are a quiet navy base (~70% of the screen). Cyan is the
+       ONE signature accent, spent only on "look here / active / live". The
+       profit/loss pair carries GAME MEANING (win/loss, price up/down) and is
+       never used decoratively. Asset colours are token identity for the chart
+       lines and are kept separate from the profit/loss outcome colours.
+       ================================================================= */
     :root {
-      --bg: #0e1116;
-      --panel: #161b22;
-      --panel-2: #1c2330;
-      --line: #2a3242;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --buy: #2ea043;   /* green  = buy DOGE */
-      --sell: #f0506e;  /* red    = sell DOGE */
-      --victim: #ff8c1a;/* orange = victim (mempool) */
-      --accent: #58a6ff;
+      /* Backgrounds — navy base, darkest → panel */
+      --bg-deep:    #0A1A3F;   /* page / darkest */
+      --bg-mid:     #0D2456;   /* zone panels */
+      --surface:    #12294D;   /* cards / boxes on the bg */
+      --surface-hi: #1A3560;   /* raised / hovered surface */
+
+      /* Signature accent — SPARINGLY: active / live / key headings */
+      --cyan:       #2DD4E8;
+
+      /* Semantic — GAME MEANING only, never decorative */
+      --profit:     #3FB950;   /* your gain / price up / win */
+      --loss:       #F85149;   /* victim / price down / loss */
+
+      /* Text */
+      --text:       #E6EDF3;
+      --text-muted: #8B949E;
+
+      /* Structure */
+      --border:     #2A3242;
+
+      /* Per-asset chart identity (mirror app.ts ASSET_COLORS exactly) */
+      --asset-1: #58A6FF; --asset-2: #F778BA; --asset-3: #3FB950;
+      --asset-4: #D29922; --asset-5: #A371F7; --asset-6: #FF7B72;
+
+      /* Derived tints (kept here so no raw rgba leaks into rules below) */
+      --cyan-soft:   rgba(45,212,232,.14);
+      --cyan-faint:  rgba(45,212,232,.06);
+      --cyan-line:   rgba(45,212,232,.55);
+      --profit-soft: rgba(63,185,80,.14);
+      --loss-soft:   rgba(248,81,73,.14);
+      --loss-line:   rgba(248,81,73,.5);
+      --caution:     #D29922;               /* exposure/warning (not an outcome) */
+      --caution-soft:rgba(210,153,34,.12);
+      --caution-line:rgba(210,153,34,.4);
+      --cyan-dim:    #1FB6C9;                /* darker cyan for the CTA gradient */
+      --text-dim:    #B9C4D0;                /* between text & muted (victim labels) */
+      --ink:         #052015;                /* dark text on a bright fill */
+      --hairline:    rgba(255,255,255,.06);
+      --sheen:       rgba(255,255,255,.05);
+      --shadow-sm:   0 1px 2px rgba(0,0,0,.4);
+      --shadow-md:   0 8px 22px -12px rgba(0,0,0,.8);
+      --shadow-lg:   0 24px 60px -20px rgba(0,0,0,.85);
     }
+
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
+
     body {
-      background: var(--bg);
+      /* Quiet diagonal navy gradient — low contrast, sits in the background. */
+      background: linear-gradient(135deg, var(--bg-deep) 0%, var(--bg-mid) 100%);
+      background-attachment: fixed;
       color: var(--text);
       font: 14px/1.4 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
       display: grid;
-      grid-template-columns: 200px 1fr;
+      grid-template-columns: 212px 1fr;
       grid-template-rows: 100%;
       height: 100vh;
       overflow: hidden;
     }
 
+    /* Shared caption look for every zone/section heading. */
+    .panel h2,
+    #sidebar h2,
+    #inventory-box h2 {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--text-muted);
+      margin: 0 0 8px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    /* Small square bullet before a caption; colour set per-zone below. */
+    .panel h2::before {
+      content: "";
+      width: 7px; height: 7px;
+      border-radius: 2px;
+      background: currentColor;
+      opacity: .8;
+    }
+
     /* ---------- Left sidebar: create new transactions ---------- */
     #sidebar {
-      background: var(--panel);
-      border-right: 1px solid var(--line);
-      padding: 14px;
+      background: var(--bg-mid);
+      border-right: 1px solid var(--border);
+      padding: 16px 14px;
       display: flex;
       flex-direction: column;
       gap: 12px;
       overflow-y: auto;
     }
-    #sidebar h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; }
+    #sidebar h2 { color: var(--cyan); }
+    /* Visible app name / brand at the top of the sidebar. */
+    #brand {
+      padding-bottom: 12px;
+      margin-bottom: 2px;
+      border-bottom: 1px solid var(--border);
+    }
+    #brand .brand-name {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: .01em;
+      line-height: 1.1;
+      color: var(--text);
+      text-shadow: 0 0 18px var(--cyan-soft);
+    }
+    #brand .brand-tag {
+      margin-top: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      color: var(--cyan);
+    }
     #palette { display: flex; flex-direction: column; gap: 10px; }
-    .hint { font-size: 11px; color: var(--muted); }
+    .hint { font-size: 11px; line-height: 1.5; color: var(--text-muted); }
 
-    /* Inventory and execution controls */
+    /* Floating inventory + controls card, pinned over the chart's right side. */
     #inventory-box {
       position: absolute;
-      right: 14px;
+      right: 16px;
       top: 50%;
       transform: translateY(-50%);
-      width: 240px;
-      padding: 10px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: rgba(14,17,22,.9);
-      backdrop-filter: blur(8px);
-      box-shadow: 0 16px 40px -16px rgba(0,0,0,.9);
+      width: 244px;
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(10,26,63,.82);
+      backdrop-filter: blur(10px);
+      box-shadow: var(--shadow-lg);
       z-index: 2;
     }
     #inventory-panel {
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: rgba(28,35,48,.8);
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(18,41,77,.7);
     }
-    #inventory-box h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+    #inventory-box h2 { color: var(--text-muted); }
     #inventory { display: flex; flex-direction: column; gap: 6px; }
     .inv-row {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
       gap: 14px;
-      padding: 6px 9px;
-      border-radius: 7px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
     }
-    .inv-asset { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .inv-asset { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
     .inv-amt { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); }
+    /* Exposure is a CAUTION (you're holding a risky bag), not an outcome — so
+       it uses the amber caution tint, keeping profit/loss reserved for results. */
+    .inv-row.exposed {
+      border-color: var(--caution-line);
+      background: var(--caution-soft);
+    }
+    .inv-row.exposed .inv-amt { color: var(--caution); }
 
-    /* ---------- Main column: graph / block / mempool ---------- */
+    /* ---------- Main column: chart / block / mempool ---------- */
     #main {
       display: grid;
       grid-template-rows: 2fr 1fr 1fr;
       height: 100vh;
       min-height: 0;
     }
-    .panel { border-bottom: 1px solid var(--line); padding: 12px 16px; min-height: 0; display: flex; flex-direction: column; }
-    .panel > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+    .panel {
+      border-bottom: 1px solid var(--border);
+      padding: 12px 16px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
 
-    /* Graph area */
-    #graph-panel { background: var(--panel-2); }
+    /* --- Zone 1: PRICE CHART (top). Subtle cyan wash = "the live readout". --- */
+    #graph-panel {
+      background:
+        linear-gradient(180deg, var(--cyan-faint), transparent 46%),
+        var(--bg-mid);
+    }
+    #graph-panel h2 { color: var(--cyan); }
     #graph-wrap { position: relative; flex: 1; min-height: 0; }
     #graph { width: 100%; height: 100%; display: block; }
 
+    /* Chart header row: caption left, legend right — legend never covers the plot. */
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+    .panel-head h2 { margin: 0; }
+    #chart-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    #chart-legend .lg { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+    #chart-legend .sw { display: inline-block; width: 14px; }
+    #chart-legend .sw.live   { height: 3px; border-radius: 2px; background: var(--cyan); box-shadow: 0 0 8px -1px var(--cyan); }
+    #chart-legend .sw.revert { height: 0; border-top: 2px dashed var(--loss); }
+    #chart-legend .sw.buy    { width: 10px; height: 10px; border-radius: 3px; background: var(--profit); }
+    #chart-legend .sw.sell   { width: 10px; height: 10px; border-radius: 3px; background: var(--loss); }
+
+    /* --- Zone 2: YOUR BLOCK (middle). The active workspace — raised surface,
+           cyan top hairline + faint inner glow so it reads as "where you work". --- */
+    #block-panel {
+      background: var(--surface);
+      border-top: 2px solid var(--cyan-line);
+      box-shadow: inset 0 14px 30px -26px var(--cyan);
+    }
+    /* Always-visible level objective banner (guidance → faint cyan wash). */
+    #objective {
+      display: flex; flex-direction: column; gap: 8px;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--cyan-faint);
+    }
+    #objective:empty { display: none; }
+    .obj-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .obj-badge {
+      font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--ink); background: var(--cyan); padding: 3px 9px; border-radius: 999px;
+    }
+    .obj-goal { font-size: 14px; font-weight: 700; color: var(--text); }
+    .obj-goal strong { color: var(--profit); }
+    .obj-meta { font-size: 12px; color: var(--text-muted); }
+    .obj-hint { font-size: 12px; }
+    .obj-hint > summary { cursor: pointer; width: fit-content; color: var(--cyan); font-weight: 700; list-style: none; }
+    .obj-hint > summary::-webkit-details-marker { display: none; }
+    .obj-hint > summary::before { content: "\25B8"; margin-right: 5px; }   /* ▸ collapsed */
+    .obj-hint[open] > summary::before { content: "\25BE"; }                /* ▾ expanded */
+    .obj-hint p { margin: 8px 0 0; color: var(--text-muted); line-height: 1.5; }
+    #block-panel h2 { color: var(--cyan); }
+
+    /* --- Zone 3: PUBLIC MEMPOOL (bottom). Flat + muted = "not yours, public". --- */
+    #mempool-panel { background: var(--bg-deep); border-bottom: none; }
+    #mempool-panel h2 { color: var(--text-muted); }
+
     /* ---------- Scanner popups: "{wallet} buys/sells x ASSET" ---------- */
-    /* An overlay pinned over the graph. Each popup is spawned at the horizontal
-       centre of the box the playhead just entered, then rises and fades. */
     #popups { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 4; }
     .popup {
       position: absolute;
@@ -109,18 +263,18 @@
       font-size: 15px;
       padding: 6px 13px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.14);
-      background: rgba(20,26,36,.94);
-      box-shadow: 0 10px 26px -10px rgba(0,0,0,.85);
+      border: 1px solid var(--hairline);
+      background: rgba(10,26,63,.95);
+      box-shadow: var(--shadow-md);
       color: var(--text);
       animation: popup-rise 2.5s cubic-bezier(.2,.7,.2,1) forwards;
     }
-    .popup .who { color: var(--muted); font-weight: 700; margin-right: 3px; }
-    .popup.buy  { color: #7ee787; border-color: rgba(46,160,67,.55);  box-shadow: 0 0 20px -4px rgba(46,160,67,.55); }
-    .popup.sell { color: #ff9db0; border-color: rgba(240,80,110,.55); box-shadow: 0 0 20px -4px rgba(240,80,110,.55); }
-    .popup.mine { color: #ffd479; border-color: rgba(210,153,34,.6);  box-shadow: 0 0 22px -4px rgba(210,153,34,.6); }
-    .popup.revert { color: var(--sell); border-color: rgba(240,80,110,.6); text-decoration: none; }
-    .popup.revert .who { color: #ff9db0; }
+    .popup .who { color: var(--text-muted); font-weight: 700; margin-right: 3px; }
+    .popup.buy  { color: var(--profit); border-color: var(--profit-soft); box-shadow: 0 0 20px -4px var(--profit-soft); }
+    .popup.sell { color: var(--loss);   border-color: var(--loss-soft);   box-shadow: 0 0 20px -4px var(--loss-soft); }
+    .popup.mine { color: var(--cyan);   border-color: var(--cyan-line);   box-shadow: 0 0 22px -4px var(--cyan-soft); }
+    .popup.revert { color: var(--loss); border-color: var(--loss-line); }
+    .popup.revert .who { color: var(--loss); }
     @keyframes popup-rise {
       0%   { opacity: 0; transform: translate(-50%, 10px) scale(.82); }
       14%  { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
@@ -129,8 +283,7 @@
       100% { opacity: 0; transform: translate(-50%, -52px) scale(1); }
     }
 
-    /* Block-building area (the block the player submits) */
-    #block-panel { background: var(--panel); }
+    /* Block-building area — the ordered list the player submits. */
     #block-area {
       flex: 1;
       display: flex;
@@ -138,45 +291,48 @@
       align-items: stretch;
       gap: 8px;
       padding: 8px;
-      border: 1px dashed var(--line);
-      border-radius: 8px;
+      border: 1px dashed var(--cyan-line);
+      border-radius: 10px;
+      background: var(--cyan-faint);
       overflow-x: auto;
       min-height: 0;
     }
+    #block-area:not(.has-txns) {
+      /* empty state: quieter border, no wash, prompt centred */
+      border-color: var(--border);
+      background: none;
+    }
     #block-area:not(.has-txns)::after {
       content: "Drag transactions here to build the block  →  left-to-right = execution order";
-      color: var(--muted);
+      color: var(--text-muted);
       align-self: center;
       margin: auto;
       font-size: 13px;
     }
 
-    /* Immovable spacer "boxes" that pad the block. They aren't transactions —
-       they just give the price line a flat start (lead) and end (trail) region
-       to ride across, so where the price starts and ends reads clearly.
-       Pinned to the ends with flex `order`, so dragging never displaces them. */
+    /* Immovable spacer "boxes" padding the block ends (flat lead-in / run-out
+       for the price line). Pinned with flex `order`; not `.txn`, so drags skip them. */
     .spacer {
       flex: 0 0 96px;
       align-self: stretch;
       display: flex;
       align-items: center;
       justify-content: center;
-      border-radius: 8px;
-      border: 1px dashed var(--line);
+      border-radius: 10px;
+      border: 1px dashed var(--border);
       background: rgba(255,255,255,.02);
-      color: var(--muted);
+      color: var(--text-muted);
       font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: .06em;
-      opacity: .7;
+      letter-spacing: .08em;
+      opacity: .6;
       cursor: default;
       user-select: none;
     }
     .spacer[data-spacer="lead"]  { order: -1; }
     .spacer[data-spacer="trail"] { order: 1; }
 
-    /* Mempool (unordered victim transactions) */
-    #mempool-panel { background: var(--panel); border-bottom: none; }
+    /* Mempool — unordered victim transactions. */
     #mempool {
       position: relative;
       flex: 1;
@@ -185,23 +341,22 @@
       flex-wrap: wrap;
       align-content: flex-start;
       gap: 8px;
-      padding: 8px;
-      background: rgba(0,0,0,.15);
-      border-radius: 8px;
+      padding: 10px;
+      background: rgba(0,0,0,.22);
+      border: 1px solid var(--border);
+      border-radius: 10px;
       overflow-y: auto;
       min-height: 0;
-      border: 2px solid transparent;
       transition: background .12s ease, border-color .12s ease;
     }
-    /* While dragging one of your own transactions, the mempool becomes a big
-       red "drop to discard" zone. The overlay is pointer-events:none so the
-       drop still lands on the mempool underneath. */
+    /* Dragging one of YOUR trades turns the mempool into a red "drop to discard"
+       zone. Overlay is pointer-events:none so the drop still lands underneath. */
     #mempool.cancel-mode {
-      background: rgba(240,80,110,.14);
-      border-color: var(--sell);
+      background: var(--loss-soft);
+      border-color: var(--loss);
     }
     #mempool.cancel-mode::after {
-      content: "✕  drop here to cancel";
+      content: "\2715  drop here to cancel";
       position: absolute;
       inset: 0;
       display: flex;
@@ -212,32 +367,32 @@
       font-size: 20px;
       letter-spacing: .04em;
       text-transform: uppercase;
-      color: var(--sell);
+      color: var(--loss);
       text-shadow: 0 2px 10px rgba(0,0,0,.6);
     }
 
     /* ---------- Transaction boxes ---------- */
     .txn {
-      --tone: var(--accent);                 /* per-side accent, set below */
+      --tone: var(--text-muted);              /* per-side accent, set below */
       position: relative;
-      min-width: 104px;
-      padding: 9px 11px 10px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,.09);
-      /* subtle vertical sheen + a faint wash of the side colour */
+      min-width: 112px;
+      min-height: 76px;                        /* comfortable touch target */
+      padding: 10px 12px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
       background:
-        linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,0) 42%),
-        linear-gradient(180deg, var(--panel-2), #141a24);
+        linear-gradient(180deg, var(--sheen), transparent 42%),
+        var(--surface);
       cursor: grab;
       user-select: none;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 4px;
       overflow: hidden;
-      box-shadow: 0 1px 2px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
+      box-shadow: var(--shadow-sm);
       transition: transform .1s ease, box-shadow .15s ease, border-color .15s ease;
     }
-    /* left accent rail, drawn as a pseudo-element so it can glow */
+    /* left accent rail (direction of the trade) */
     .txn::before {
       content: "";
       position: absolute;
@@ -247,17 +402,17 @@
       box-shadow: 0 0 10px -1px var(--tone);
     }
     .txn:hover {
-      transform: translateY(-1px);
-      border-color: rgba(255,255,255,.18);
-      box-shadow: 0 6px 16px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.03) inset;
+      transform: translateY(-2px);
+      border-color: var(--hairline);
+      box-shadow: var(--shadow-md);
     }
     .txn:active { cursor: grabbing; transform: translateY(0); }
-    /* forceFallback drags a clone of .txn as the ghost; its inherited
-       `transition: transform` would animate every per-frame reposition,
-       making the ghost ease toward (and trail) the cursor. Snap it instead. */
-    .sortable-fallback { transition: none !important; }
 
-    /* header row: direction arrow + action label */
+    /* Direction = price meaning: BUY pushes price UP (profit-green rail),
+       SELL pushes it DOWN (loss-red rail). Not decoration — it's the move. */
+    .txn.buy  { --tone: var(--profit); }
+    .txn.sell { --tone: var(--loss); }
+
     .txn .action {
       font-weight: 700;
       font-size: 13px;
@@ -267,12 +422,12 @@
       gap: 6px;
     }
     .txn .action::before {
-      content: "▲";
+      content: "\25B2";                        /* ▲ up = buy */
       font-size: 9px;
       line-height: 1;
       color: var(--tone);
     }
-    .txn.sell .action::before { content: "▼"; }
+    .txn.sell .action::before { content: "\25BC"; } /* ▼ down = sell */
 
     /* owner rendered as a small pill */
     .txn .owner {
@@ -281,92 +436,124 @@
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: .05em;
-      color: var(--muted);
+      color: var(--text-muted);
       background: rgba(255,255,255,.05);
-      border: 1px solid rgba(255,255,255,.06);
-      padding: 1px 6px;
+      border: 1px solid var(--hairline);
+      padding: 1px 7px;
       border-radius: 999px;
     }
 
-    .txn.buy  { --tone: var(--buy); }
-    .txn.sell { --tone: var(--sell); }
-
-    /* Victim (mempool) — orange, with a warm tint so it clearly reads as prey */
-    .txn.victim {
-      --tone: var(--victim);
-      border-color: rgba(255,140,26,.30);
+    /* --- YOUR trade: cyan-ringed + raised. Unmistakably "mine / active". --- */
+    .txn.mine {
       background:
-        linear-gradient(180deg, rgba(255,140,26,.12), rgba(255,140,26,.03) 55%),
-        linear-gradient(180deg, var(--panel-2), #141a24);
+        linear-gradient(180deg, var(--sheen), transparent 42%),
+        var(--surface-hi);
+      border-color: var(--cyan-line);
+      box-shadow: 0 0 0 1px var(--cyan-soft), var(--shadow-md), 0 0 20px -8px var(--cyan);
     }
-    .txn.victim .action::before { color: var(--victim); }
+    .txn.mine .owner {
+      color: var(--cyan);
+      background: var(--cyan-soft);
+      border-color: var(--cyan-line);
+    }
+    .txn.mine:hover { box-shadow: 0 0 0 1px var(--cyan-line), var(--shadow-md), 0 0 26px -6px var(--cyan); }
+
+    /* --- VICTIM: muted, flat, reads as "not yours / prey". Direction stays
+           visible (dimmed rail + arrow) so you can still see buy vs sell. --- */
+    .txn.victim {
+      background: rgba(18,41,77,.55);
+      border-color: var(--border);
+    }
+    .txn.victim::before { opacity: .45; box-shadow: none; }
+    .txn.victim .action { color: var(--text-dim); }
     .txn.victim .owner {
-      color: #ffc27a;
-      background: rgba(255,140,26,.14);
-      border-color: rgba(255,140,26,.28);
+      color: var(--text-muted);
+      background: rgba(255,255,255,.04);
+      border-color: var(--border);
     }
 
     .txn .min-out {
       margin-top: 3px;
       font-size: 10px;
       font-weight: 700;
-      color: var(--sell);
+      color: var(--loss);
     }
 
     .txn .qty {
-      width: 88px;
+      width: 100%;
       margin-top: 6px;
-      accent-color: var(--tone);
+      accent-color: var(--cyan);
       cursor: pointer;
+      height: 20px;                            /* fatter track = easier on touch */
     }
 
-    /* palette templates look like a "source" */
+    /* palette templates look like a re-usable "source" you clone from */
     .template {
       border-style: dashed;
-      border-color: rgba(255,255,255,.16);
-      opacity: .92;
-      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0));
+      border-color: var(--cyan-line);
+      opacity: .9;
+      background: linear-gradient(180deg, var(--cyan-faint), transparent);
     }
-    .template:hover { opacity: 1; }
+    .template::after {
+      content: "drag to add";
+      margin-top: 2px;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .template:hover { opacity: 1; box-shadow: 0 0 18px -8px var(--cyan); }
+    /* the palette's own drag-hint child is redundant with ::after; hide it */
+    .template .owner { display: none; }
 
-    .sortable-ghost { opacity: .3; }
-    .sortable-chosen {
-      box-shadow: 0 10px 24px -8px rgba(0,0,0,.7), 0 0 0 1px var(--accent) inset;
+    /* ---------- SortableJS drag states (forceFallback:true) ---------- */
+    /* The moving clone: lift it — scale up, strong shadow, cyan ring. */
+    .sortable-drag, .sortable-fallback {
+      cursor: grabbing;
+      transform: scale(1.04);
+      box-shadow: 0 18px 40px -12px rgba(0,0,0,.85), 0 0 0 1px var(--cyan-line);
+      opacity: 1 !important;
     }
-    .sortable-drag { cursor: grabbing; }
+    /* forceFallback clones inherit `transition: transform`, which would animate
+       every per-frame reposition and make the ghost trail the cursor. Snap it. */
+    .sortable-fallback { transition: none !important; }
+    /* The gap left behind at the drop target: a clear dashed cyan slot. */
+    .sortable-ghost {
+      opacity: 1;
+      background: var(--cyan-faint) !important;
+      border: 1px dashed var(--cyan-line) !important;
+      box-shadow: none !important;
+    }
+    .sortable-ghost > * { visibility: hidden; }
+    .sortable-chosen { border-color: var(--cyan-line); }
 
     /* ---------- Execution controls ---------- */
     #controls { display: grid; grid-template-columns: 1fr; gap: 8px; padding-top: 10px; }
     #controls button {
-      min-height: 42px;
+      min-height: 44px;
       font: inherit;
-      font-weight: 750;
+      font-weight: 800;
       letter-spacing: .02em;
       color: var(--text);
       padding: 10px 8px;
-      border-radius: 9px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface-hi);
       cursor: pointer;
-      transition: transform .1s ease, border-color .15s ease, background .15s ease;
+      transition: transform .1s ease, border-color .15s ease, box-shadow .15s ease;
     }
-    #controls button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.28); }
+    #controls button:hover { transform: translateY(-1px); border-color: var(--hairline); }
     #controls button:active { transform: translateY(0); }
-    /* Must out-specify `#controls button` above (id+type beats a bare id),
-       otherwise its panel-2 background overrides this green one. */
-    #controls #btn-simulate { background: linear-gradient(180deg, #2ea043, #247d34); border-color: rgba(46,160,67,.7); }
-    #controls #btn-simulate:hover { border-color: var(--buy); }
+    /* Simulate is the key CTA → the one cyan-filled action on screen.
+       (id+type out-specifies the bare `#controls button` rule above.) */
+    #controls #btn-simulate {
+      background: linear-gradient(180deg, var(--cyan), var(--cyan-dim));
+      border-color: var(--cyan);
+      color: var(--ink);
+    }
+    #controls #btn-simulate:hover { box-shadow: 0 0 22px -6px var(--cyan); }
     body.playing #controls button { opacity: .5; pointer-events: none; }
     body.playing #block-area,
     body.playing #mempool,
     body.playing #palette { pointer-events: none; }
-
-    /* live-exposure highlight on inventory rows holding a risky (non-USDC) asset */
-    .inv-row.exposed {
-      border-color: rgba(255,140,26,.45);
-      background: rgba(255,140,26,.10);
-    }
-    .inv-row.exposed .inv-amt { color: #ffc27a; }
 
     /* ---------- Bottom-left level navigation ---------- */
     #level-nav {
@@ -379,10 +566,10 @@
       gap: 6px;
       padding: 5px 7px;
       border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(14,17,22,.85);
+      border: 1px solid var(--border);
+      background: rgba(10,26,63,.85);
       backdrop-filter: blur(8px);
-      box-shadow: 0 8px 24px -12px rgba(0,0,0,.9);
+      box-shadow: var(--shadow-md);
     }
     #level-nav button {
       font: inherit;
@@ -391,69 +578,350 @@
       color: var(--text);
       padding: 4px 9px;
       border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
+      border: 1px solid var(--border);
+      background: var(--surface-hi);
       cursor: pointer;
       transition: border-color .12s ease, opacity .12s ease;
     }
-    #level-nav button:hover { border-color: var(--accent); }
-    #level-nav button:disabled { opacity: .35; cursor: default; border-color: var(--line); }
-    #level-label { font-size: 11px; font-weight: 700; color: var(--muted); min-width: 74px; text-align: center; }
+    #level-nav button:hover { border-color: var(--cyan); }
+    #level-nav button:disabled { opacity: .35; cursor: default; border-color: var(--border); }
+    #level-label { font-size: 11px; font-weight: 700; color: var(--text-muted); min-width: 74px; text-align: center; }
 
-    /* ---------- Full-screen execution summary ---------- */
+    /* ---------- Bundle relay scene: bundle -> builder -> block forms -> network ----------
+       Purely presentational; app.js only toggles .hidden and skips on click.
+       ~4.8s timeline: (1) an ordered bundle travels to the builder, (2) txs — your
+       bundle PLUS a couple of other users' txs — drop in and stack, then the block
+       SEALS with a hash, (3) the sealed block gossips node-to-node across a graph. */
+    #relay {
+      position: fixed; inset: 0; z-index: 24;
+      display: grid; place-items: center;
+      padding: 24px;
+      background: rgba(5,10,24,.85);
+      backdrop-filter: blur(8px);
+      cursor: pointer;
+      animation: result-fade .2s ease-out;
+    }
+    #relay.hidden { display: none; }
+    .relay-card {
+      width: min(640px, 100%);
+      padding: 26px 28px 20px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      border-top: 2px solid var(--cyan-line);
+      background: var(--bg-mid);
+      box-shadow: var(--shadow-lg);
+      animation: result-pop .3s cubic-bezier(.2,.8,.2,1.1);
+    }
+    .relay-title {
+      font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em;
+      color: var(--cyan); text-align: center; margin-bottom: 12px;
+    }
+    /* Stage: three fixed actors (searcher / builder / network) + two travellers. */
+    .relay-stage { position: relative; height: 214px; }
+    .relay-actor { position: absolute; top: 16px; transform: translateX(-50%); text-align: center; width: 120px; }
+    .relay-actor.searcher { left: 13%; }
+    .relay-actor.builder  { left: 47%; }
+    .relay-actor.network  { left: 82%; top: 172px; }  /* label sits BELOW the node graph */
+    .relay-ic {
+      width: 46px; height: 46px; margin: 0 auto;
+      display: grid; place-items: center;
+      font-size: 23px; border-radius: 50%;
+      background: var(--surface); border: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+    }
+    .relay-actor.builder .relay-ic { border-color: var(--cyan-line); }
+    .relay-lbl { margin-top: 7px; font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+
+    /* --- Phase 1: the travelling ordered bundle (mini tx bars) --- */
+    .relay-bundle {
+      position: absolute; top: 27px; left: 13%; transform: translateX(-50%);
+      display: flex; gap: 2px; padding: 4px 5px; opacity: 0;
+      border-radius: 6px; background: var(--surface-hi); border: 1px solid var(--cyan-line);
+      animation: relay-bundle-move 4.8s ease-in-out forwards;
+    }
+    .relay-bundle .bar { width: 4px; height: 18px; border-radius: 2px; }
+    .relay-bundle .bar.buy  { background: var(--profit); }
+    .relay-bundle .bar.sell { background: var(--loss); }
+    .relay-bundle .bar.mine { background: var(--cyan); }
+    @keyframes relay-bundle-move {
+      0%   { left: 13%; opacity: 0; }
+      4%   { opacity: 1; }
+      27%  { left: 47%; opacity: 1; }
+      31%  { left: 47%; opacity: 0; }
+      100% { left: 47%; opacity: 0; }
+    }
+
+    /* --- Phase 2: transactions stack into a block at the builder, then it seals --- */
+    .relay-assembly {
+      position: absolute; top: 98px; left: 47%; transform: translateX(-50%);
+      width: 96px; padding: 6px; display: flex; flex-direction: column; gap: 3px;
+      border-radius: 8px; border: 1px dashed var(--border); background: rgba(0,0,0,.22);
+      animation: relay-asm-seal .01s linear 2.55s forwards; /* border/glow flips at seal */
+    }
+    .asm-row {
+      height: 9px; border-radius: 2px; opacity: 0; transform: translateY(-14px);
+      animation: relay-asm-drop .4s cubic-bezier(.2,.8,.2,1) forwards;
+    }
+    .asm-row.mine  { background: var(--cyan); }
+    .asm-row.buy   { background: var(--profit); }
+    .asm-row.sell  { background: var(--loss); }
+    .asm-row.extra { background: var(--text-muted); }   /* other users' txs */
+    .asm-row.r1 { animation-delay: 1.5s; }
+    .asm-row.r2 { animation-delay: 1.65s; }
+    .asm-row.r3 { animation-delay: 1.8s; }
+    .asm-row.r4 { animation-delay: 1.95s; }
+    .asm-row.x1 { animation-delay: 2.15s; }
+    .asm-row.x2 { animation-delay: 2.3s; }
+    @keyframes relay-asm-drop { to { opacity: 1; transform: translateY(0); } }
+    @keyframes relay-asm-seal { to { border-style: solid; border-color: var(--cyan-line); box-shadow: 0 0 18px -6px var(--cyan); } }
+    .asm-seal {
+      margin-top: 2px; font: 700 9px ui-monospace, SFMono-Regular, Consolas, monospace;
+      color: var(--cyan); text-align: center; opacity: 0;
+      animation: relay-seal-in .4s ease-out 2.6s forwards;
+    }
+    @keyframes relay-seal-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+    /* --- Phase 3a: the sealed block travels to the network --- */
+    .relay-blocktoken {
+      position: absolute; top: 42px; left: 47%; transform: translateX(-50%);
+      padding: 5px 9px; opacity: 0;
+      font: 800 10px ui-sans-serif, system-ui; letter-spacing: .04em; color: var(--ink);
+      background: var(--cyan); border-radius: 6px; box-shadow: 0 0 16px -4px var(--cyan);
+      animation: relay-block-move 4.8s ease-in-out forwards;
+    }
+    @keyframes relay-block-move {
+      0%, 60% { left: 47%; opacity: 0; }
+      64%     { opacity: 1; }
+      90%     { left: 82%; opacity: 1; }
+      100%    { left: 82%; opacity: 1; }
+    }
+
+    /* --- Phase 3b: gossip across the network graph (edges + nodes light outward) --- */
+    .relay-net { position: absolute; top: 44px; left: 82%; transform: translateX(-50%); width: 150px; height: 120px; overflow: visible; }
+    .relay-net .edge {
+      stroke: var(--cyan); stroke-width: 1.5; opacity: 0;
+      animation: relay-edge .4s ease-out forwards; animation-delay: calc(3.9s + var(--t));
+    }
+    .relay-net .node {
+      fill: var(--profit); opacity: .16;
+      animation: relay-netnode .4s ease-out forwards; animation-delay: calc(3.95s + var(--t));
+    }
+    @keyframes relay-edge { to { opacity: .7; } }
+    @keyframes relay-netnode { to { opacity: 1; } }
+
+    /* --- Captions cross-fade with the three phases (over the 4.8s timeline) --- */
+    .relay-caps { position: relative; height: 40px; margin-top: 6px; }
+    .relay-cap {
+      position: absolute; inset: 0; opacity: 0;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+      font-size: 14px; line-height: 1.4; color: var(--text);
+    }
+    .relay-cap strong { color: var(--cyan); }
+    .relay-cap.c1 { animation: relay-cap1 4.8s ease-in-out forwards; }
+    .relay-cap.c2 { animation: relay-cap2 4.8s ease-in-out forwards; }
+    .relay-cap.c3 { animation: relay-cap3 4.8s ease-in-out forwards; }
+    @keyframes relay-cap1 { 0%{opacity:0} 3%{opacity:1} 25%{opacity:1} 29%{opacity:0} 100%{opacity:0} }
+    @keyframes relay-cap2 { 0%,29%{opacity:0} 33%{opacity:1} 60%{opacity:1} 64%{opacity:0} 100%{opacity:0} }
+    @keyframes relay-cap3 { 0%,64%{opacity:0} 68%{opacity:1} 100%{opacity:1} }
+    .relay-skip { margin-top: 12px; text-align: center; font-size: 11px; color: var(--text-muted); letter-spacing: .03em; }
+
+    /* ---------- Full-screen execution summary (the payoff moment) ---------- */
     #result {
       position: fixed;
       inset: 0;
       display: grid;
       place-items: center;
       padding: 24px;
-      background: rgba(5,8,12,.78);
+      background: rgba(5,10,24,.8);
       backdrop-filter: blur(8px);
       z-index: 20;
       animation: result-fade .2s ease-out;
     }
     #result.hidden { display: none; }
+    /* Win confetti — pieces injected by app.js on a level pass, each falls + spins. */
+    .confetti-piece {
+      position: absolute; top: -14px;
+      border-radius: 2px;
+      pointer-events: none;
+      opacity: 0;
+      animation-name: confetti-fall;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+    }
+    @keyframes confetti-fall {
+      0%   { opacity: 0; transform: translateY(-14px) rotateZ(0deg); }
+      10%  { opacity: 1; }
+      85%  { opacity: 1; }
+      100% { opacity: 0; transform: translateY(102vh) rotateZ(720deg); }
+    }
     .result-card {
       width: min(520px, 100%);
       padding: 28px;
-      border-radius: 18px;
-      border: 1px solid var(--line);
-      background: #161b22;
-      box-shadow: 0 32px 100px rgba(0,0,0,.65);
-      animation: result-pop .25s cubic-bezier(.2,.8,.2,1.1);
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--bg-mid);
+      box-shadow: var(--shadow-lg);
+      animation: result-pop .3s cubic-bezier(.2,.8,.2,1.1);
     }
-    .result-win .result-card { border-color: rgba(46,160,67,.5); }
-    .result-loss .result-card { border-color: rgba(240,80,110,.5); }
+    .result-win  .result-card { border-color: var(--profit); box-shadow: var(--shadow-lg), 0 0 60px -24px var(--profit); }
+    .result-loss .result-card { border-color: var(--loss);   box-shadow: var(--shadow-lg), 0 0 60px -24px var(--loss); }
     @keyframes result-fade { from { opacity: 0; } }
-    @keyframes result-pop { from { transform: translateY(10px) scale(.97); } }
-    .result-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
-    .result-hash { margin-top: 4px; font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--accent); }
-    .result-profit { margin: 18px 0 20px; font-size: 38px; font-weight: 800; font-variant-numeric: tabular-nums; }
-    .result-win .result-profit { color: var(--buy); }
-    .result-loss .result-profit { color: var(--sell); }
+    @keyframes result-pop { from { transform: translateY(12px) scale(.96); opacity: 0; } }
+    /* stagger the inner pieces in for a "reveal with a beat" */
+    @keyframes reveal-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .result-card > * { animation: reveal-up .32s ease-out both; }
+    .result-title  { animation-delay: .04s; }
+    .result-hash   { animation-delay: .08s; }
+    .result-profit { animation-delay: .14s; }
+    .result-grid   { animation-delay: .22s; }
+    .result-warn   { animation-delay: .3s; }
+    #result button { animation-delay: .36s; }
+
+    .result-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; color: var(--text-muted); }
+    .result-hash { margin-top: 4px; font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--cyan); }
+    .result-profit { margin: 18px 0 20px; font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .result-win  .result-profit { color: var(--profit); }
+    .result-loss .result-profit { color: var(--loss); }
     .result-flat .result-profit { color: var(--text); }
-    .result-grid { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; }
-    .result-row { display: flex; justify-content: space-between; gap: 20px; padding: 10px 13px; background: var(--panel-2); }
-    .result-row + .result-row { border-top: 1px solid var(--line); }
-    .result-row span { color: var(--muted); }
+    .result-grid { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; }
+    .result-row { display: flex; justify-content: space-between; gap: 20px; padding: 10px 13px; background: var(--surface); }
+    .result-row + .result-row { border-top: 1px solid var(--border); }
+    .result-row span { color: var(--text-muted); }
     .result-row strong { font-variant-numeric: tabular-nums; }
-    .result-warn { margin-top: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,140,26,.30); background: rgba(255,140,26,.10); color: #ffc27a; font-size: 12px; line-height: 1.5; }
-    #result button { width: 100%; margin-top: 18px; font: inherit; font-weight: 700; color: var(--text); padding: 11px 20px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
-    #result button:hover { border-color: var(--accent); }
-    #result button#result-next { background: #1f9d55; border-color: #1f9d55; color: #fff; }
-    #result button#result-next:hover { background: #178048; border-color: #178048; }
+    /* Warnings / hints are CAUTION, not an outcome → amber, keeping profit/loss pure. */
+    .result-warn {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--caution-line);
+      background: var(--caution-soft);
+      color: var(--caution);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+    #result button { width: 100%; margin-top: 18px; font: inherit; font-weight: 800; color: var(--text); padding: 12px 20px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-hi); cursor: pointer; }
+    #result button:hover { border-color: var(--cyan); }
+    #result button#result-next { background: var(--profit); border-color: var(--profit); color: var(--ink); }
+    #result button#result-next:hover { box-shadow: 0 0 24px -6px var(--profit); }
+
+    /* ---------- How-to-play / info overlay (pure-CSS toggle, no JS) ----------
+       A hidden checkbox drives everything: the "?" FAB and the backdrop are
+       <label>s pointing at it, so opening/closing needs no script and never
+       touches the engine. Checked by default → the intro shows on first load. */
+    #help-toggle { display: none; }
+    #help-fab {
+      position: fixed; top: 12px; right: 14px; z-index: 18;
+      width: 34px; height: 34px; border-radius: 50%;
+      display: grid; place-items: center;
+      font-weight: 800; font-size: 17px;
+      color: var(--cyan);
+      background: rgba(10,26,63,.85);
+      border: 1px solid var(--cyan-line);
+      backdrop-filter: blur(8px);
+      box-shadow: var(--shadow-md);
+      cursor: pointer; user-select: none;
+      transition: transform .1s ease, box-shadow .15s ease;
+    }
+    #help-fab:hover { transform: translateY(-1px); box-shadow: 0 0 20px -6px var(--cyan); }
+
+    #help-overlay { display: none; }
+    #help-toggle:checked ~ #help-overlay {
+      display: grid; place-items: center;
+      position: fixed; inset: 0; z-index: 25;
+      padding: 24px;
+      background: rgba(5,10,24,.82);
+      backdrop-filter: blur(8px);
+      animation: result-fade .2s ease-out;
+    }
+    .help-backdrop { position: absolute; inset: 0; cursor: pointer; }
+    .help-card {
+      position: relative;
+      width: min(680px, 100%);
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
+      padding: 28px 30px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      border-top: 2px solid var(--cyan-line);
+      background: var(--bg-mid);
+      box-shadow: var(--shadow-lg);
+      animation: result-pop .3s cubic-bezier(.2,.8,.2,1.1);
+    }
+    .help-card h1 { margin: 0; font-size: 24px; letter-spacing: .01em; }
+    .help-card .help-sub { color: var(--cyan); font-weight: 700; font-size: 13px; margin: 4px 0 18px; }
+    .help-card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--text-muted); margin: 20px 0 8px; }
+    .help-card p { margin: 0 0 10px; line-height: 1.55; }
+    .help-card p.muted { color: var(--text-muted); font-size: 13px; }
+    .help-card .c-cyan   { color: var(--cyan);   font-weight: 800; }
+    .help-card .c-profit { color: var(--profit); font-weight: 800; }
+    .help-card .c-loss   { color: var(--loss);   font-weight: 800; }
+    .zone-key { display: flex; flex-direction: column; gap: 7px; }
+    .zone-key .row { display: flex; align-items: baseline; gap: 9px; line-height: 1.5; }
+    .zone-key .dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 3px; transform: translateY(1px); }
+    .zone-key .dot.cyan  { background: var(--cyan); }
+    .zone-key .dot.muted { background: var(--text-muted); }
+    .help-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+    .help-steps li { display: flex; gap: 11px; align-items: baseline; line-height: 1.5; }
+    .help-steps .n {
+      flex: 0 0 22px; height: 22px; border-radius: 50%;
+      display: grid; place-items: center;
+      font-size: 11px; font-weight: 800; color: var(--ink); background: var(--cyan);
+      transform: translateY(2px);
+    }
+    .help-close {
+      display: block; margin-top: 24px; width: 100%; text-align: center;
+      font-weight: 800; font-size: 15px; padding: 13px 20px; border-radius: 10px;
+      color: var(--ink); background: var(--cyan); border: 1px solid var(--cyan);
+      cursor: pointer; user-select: none;
+      transition: box-shadow .15s ease;
+    }
+    .help-close:hover { box-shadow: 0 0 24px -6px var(--cyan); }
+
+    /* Respect users who ask for less motion: kill the reveal/pop animations. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+      .txn, .txn:hover, #controls button, #level-nav button { transition: none !important; }
+    }
+
+    /* ---------- Touch / small-screen: keep boxes grabbable ---------- */
+    @media (max-width: 760px) {
+      body { grid-template-columns: 1fr; }
+      #sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      #palette { flex-direction: row; flex-wrap: wrap; }
+      #inventory-box { position: static; transform: none; width: auto; margin: 10px 16px; }
+      .txn { min-width: 128px; min-height: 82px; }   /* bigger finger targets */
+    }
   </style>
 </head>
 <body>
   <aside id="sidebar">
+    <div id="brand">
+      <div class="brand-name">MEV Dojo</div>
+      <div class="brand-tag">Searcher training</div>
+    </div>
     <h2>Your transactions</h2>
-    <div class="hint">Drag a template into the block to insert your own trade.</div>
+    <div class="hint">Drag a template into the block to insert your own trade. New here? Tap <strong>?</strong> (top-right) for how to play.</div>
     <div id="palette"><!-- templates injected by app.js --></div>
   </aside>
 
   <div id="main">
     <section id="graph-panel" class="panel">
-      <h2>Asset price over the block (USD)</h2>
+      <div class="panel-head">
+        <h2>Price chart · lines up with the block below</h2>
+        <div id="chart-legend">
+          <span class="lg"><i class="sw live"></i>live price</span>
+          <span class="lg"><i class="sw revert"></i>revert limit</span>
+          <span class="lg"><i class="sw buy"></i>buy</span>
+          <span class="lg"><i class="sw sell"></i>sell</span>
+        </div>
+      </div>
       <div id="graph-wrap">
         <!-- Canvas X axis lines up EXACTLY with the transaction boxes below. -->
         <canvas id="graph"></canvas>
@@ -473,14 +941,55 @@
     </section>
 
     <section id="block-panel" class="panel">
-      <h2>Block (execution order →)</h2>
+      <h2>Your block · execution order →</h2>
+      <div id="objective"><!-- level objective injected by app.js --></div>
       <div id="block-area"><!-- player-ordered transactions --></div>
     </section>
 
     <section id="mempool-panel" class="panel">
-      <h2>Public mempool — unordered victim transactions</h2>
+      <h2>Public mempool · unordered victim transactions</h2>
       <div id="mempool"><!-- victim transactions --></div>
     </section>
+  </div>
+
+  <!-- How-to-play: a "?" button (top-right) + an intro overlay. Pure-CSS toggle
+       via #help-toggle; auto-shown on load (remove `checked` to disable that). -->
+  <input type="checkbox" id="help-toggle" checked />
+  <label for="help-toggle" id="help-fab" title="How to play" aria-label="How to play">?</label>
+  <div id="help-overlay">
+    <label for="help-toggle" class="help-backdrop" aria-label="Close"></label>
+    <div class="help-card" role="dialog" aria-modal="true" aria-label="How to play">
+      <h1>MEV Dojo</h1>
+      <div class="help-sub">You're an MEV searcher. Reorder the block. Take the profit.</div>
+
+      <p>Every block, ordinary users broadcast trades into a public <strong>mempool</strong>. As the searcher, <strong>you</strong> decide the order those trades run — and you can slip your own trades in between. Order them right and you skim profit from their price impact. That's <strong>MEV</strong> — Maximal Extractable Value.</p>
+
+      <h2>The three areas</h2>
+      <div class="zone-key">
+        <div class="row"><span class="dot cyan"></span><span><strong>Price chart</strong> (top) — the token price as the block runs, left → right. It lines up exactly with the boxes below.</span></div>
+        <div class="row"><span class="dot cyan"></span><span><strong>Your block</strong> (middle) — drag boxes here. Left-to-right = execution order.</span></div>
+        <div class="row"><span class="dot muted"></span><span><strong>Public mempool</strong> (bottom) — the victims' pending trades. Drag them up into your block.</span></div>
+      </div>
+
+      <h2>Reading a box</h2>
+      <p><span class="c-profit">&#9650; Green = BUY</span> pushes the price <strong>up</strong>.
+         <span class="c-loss">&#9660; Red = SELL</span> pushes the price <strong>down</strong>.
+         Boxes with a <span class="c-cyan">cyan glow are yours</span>; muted boxes are victims.</p>
+
+      <h2>How to play</h2>
+      <ol class="help-steps">
+        <li><span class="n">1</span><span>Drag the victims' trades from the mempool up into your block.</span></li>
+        <li><span class="n">2</span><span>Drag <strong>Buy</strong> / <strong>Sell</strong> templates from the left to insert your own trades. Use the slider on a box to size it.</span></li>
+        <li><span class="n">3</span><span>Order everything. The classic move — a <strong>sandwich</strong>: buy right <em>before</em> a victim's buy, then sell right <em>after</em>. You bought cheap, their trade pushed the price up, you sold high.</span></li>
+        <li><span class="n">4</span><span>Hit <strong>Simulate Block</strong> to watch it execute and see who lost what.</span></li>
+      </ol>
+
+      <h2>Winning</h2>
+      <p>Beat the level's <strong>profit target</strong> — and <strong>end holding only USDC</strong>. Any leftover token means you're exposed to the next block's price move, so unwind back to your starting bag to lock the profit in.</p>
+      <p class="muted">Miss an opportunity and a rival bot may grab it first. Use Prev / Next (bottom-left) to move between levels.</p>
+
+      <label for="help-toggle" class="help-close">Got it &mdash; let's train &#129355;</label>
+    </div>
   </div>
 
   <!-- Bottom-left level navigation: jump between levels at any time. -->
@@ -488,6 +997,69 @@
     <button id="btn-prev-level" type="button" title="Previous level">◀ Prev</button>
     <span id="level-label">Level 1</span>
     <button id="btn-next-level" type="button" title="Next level">Next ▶</button>
+  </div>
+
+  <!-- Bundle relay scene: plays after the block sweep, before the result.
+       Pure-CSS animation; app.js only toggles .hidden and skips on click. -->
+  <div id="relay" class="hidden" role="dialog" aria-modal="true" aria-label="Submitting bundle">
+    <div class="relay-card">
+      <div class="relay-title">From your bundle to the chain</div>
+      <div class="relay-stage">
+        <!-- Actors -->
+        <div class="relay-actor searcher">
+          <div class="relay-ic">&#129355;</div>
+          <div class="relay-lbl">You &middot; searcher</div>
+        </div>
+        <div class="relay-actor builder">
+          <div class="relay-ic">&#127959;&#65039;</div>
+          <div class="relay-lbl">Block builder</div>
+        </div>
+        <div class="relay-actor network">
+          <div class="relay-lbl">Network nodes</div>
+        </div>
+
+        <!-- Phase 2: transactions stacking into a block at the builder -->
+        <div class="relay-assembly">
+          <div class="asm-row r1 buy"></div>
+          <div class="asm-row r2 sell"></div>
+          <div class="asm-row r3 mine"></div>
+          <div class="asm-row r4 buy"></div>
+          <div class="asm-row x1 extra"></div>
+          <div class="asm-row x2 extra"></div>
+          <div class="asm-seal">&#128274; block 0x9f3a&hellip;</div>
+        </div>
+
+        <!-- Phase 1: the travelling ordered bundle (mini tx bars) -->
+        <div class="relay-bundle">
+          <span class="bar buy"></span><span class="bar sell"></span><span class="bar mine"></span><span class="bar buy"></span>
+        </div>
+
+        <!-- Phase 3a: the sealed block travelling to the network -->
+        <div class="relay-blocktoken">BLOCK</div>
+
+        <!-- Phase 3b: the network graph the block gossips across -->
+        <svg class="relay-net" viewBox="0 0 150 120">
+          <line class="edge" style="--t:0s"   x1="16" y1="60" x2="58" y2="26" />
+          <line class="edge" style="--t:0s"   x1="16" y1="60" x2="58" y2="94" />
+          <line class="edge" style="--t:.18s" x1="58" y1="26" x2="100" y2="44" />
+          <line class="edge" style="--t:.18s" x1="58" y1="94" x2="100" y2="80" />
+          <line class="edge" style="--t:.36s" x1="100" y1="44" x2="138" y2="60" />
+          <line class="edge" style="--t:.36s" x1="100" y1="80" x2="138" y2="60" />
+          <circle class="node" style="--t:0s"   cx="16"  cy="60" r="7" />
+          <circle class="node" style="--t:.1s"  cx="58"  cy="26" r="6" />
+          <circle class="node" style="--t:.1s"  cx="58"  cy="94" r="6" />
+          <circle class="node" style="--t:.26s" cx="100" cy="44" r="6" />
+          <circle class="node" style="--t:.26s" cx="100" cy="80" r="6" />
+          <circle class="node" style="--t:.44s" cx="138" cy="60" r="6" />
+        </svg>
+      </div>
+      <div class="relay-caps">
+        <div class="relay-cap c1">Your <strong>ordered bundle</strong> is sent to a block builder</div>
+        <div class="relay-cap c2">The builder <strong>assembles the transactions into a block</strong></div>
+        <div class="relay-cap c3">The sealed block is <strong>broadcast to nodes</strong> across the network</div>
+      </div>
+      <div class="relay-skip">click to skip &middot; continues automatically</div>
+    </div>
   </div>
 
   <div id="result" class="hidden" role="dialog" aria-modal="true" aria-live="polite"></div>

@@ -399,6 +399,11 @@ function newId(prefix: string): string {
 
 const txnById = new Map<string, Transaction>();
 
+// Which block box the cursor is currently over (its txn id), or null. Purely a
+// UI highlight: drawGraph brightens this box's price column so the eye connects
+// box <-> chart segment. Never read by the simulation.
+let hoveredId: string | null = null;
+
 // Build a box for a transaction. `editable` player boxes get a qty slider.
 function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } = {}): HTMLElement {
   const swap = txn as Swap;
@@ -416,7 +421,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
 
   const owner = document.createElement("div");
   owner.className = "owner";
-  owner.textContent = opts.victim ? `Victim ${txn.owner}` : "MEV \u{1F608}";
+  owner.textContent = opts.victim ? `Victim ${txn.owner}` : "MEV \u{1F94B}";
 
   el.append(owner, action);
   if (opts.victim && swap.minAmountOut !== undefined) {
@@ -493,7 +498,7 @@ function spawnTxnPopup(sim: BoxSim): void {
   if (!(sim.txn instanceof Swap)) return;
   const swap = sim.txn;
   const isPlayer = swap.owner === "PLAYER";
-  const who = isPlayer ? "You \u{1F608}" : swap.owner;
+  const who = isPlayer ? "You \u{1F94B}" : swap.owner;
 
   // Third-person "buys/sells" for victims, second-person "buy/sell" for the
   // player, so both read naturally ("You buy" vs "Steve buys").
@@ -707,9 +712,11 @@ function drawGraph(level: Level, execFrac?: number): void {
     const s = sims[i];
     if (s.txn instanceof Noop) continue;
     const { xL, xR } = edgesOf(s.el);
+    const hovered = !playing && s.txn.id === hoveredId; // hover-link from the box below
     ctx.fillStyle = !s.valid
-      ? "rgba(240,80,110,0.22)"
-      : i === activeIdx ? "rgba(88,166,255,0.16)" : "rgba(88,166,255,0.06)";
+      ? "rgba(248,81,73,0.22)"                                  // --loss wash (revert)
+      : hovered ? "rgba(45,212,232,0.30)"                       // this box's column, lit up
+      : i === activeIdx ? "rgba(45,212,232,0.16)" : "rgba(45,212,232,0.06)"; // --cyan (active/idle)
     ctx.fillRect(xL, padT, xR - xL, plotH);
   }
 
@@ -728,24 +735,24 @@ function drawGraph(level: Level, execFrac?: number): void {
     const isBuy = s.txn.side === "BUY";
     const y = yOf(isBuy ? lim.other : lim.limit);
     const yOther = yOf(isBuy ? lim.limit : lim.other);
-    ctx.fillStyle = "rgba(240,80,110,0.16)";
+    ctx.fillStyle = "rgba(248,81,73,0.16)"; // --loss wash
     if (isBuy) ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
     else ctx.fillRect(xL, y, xR - xL, Math.max(0, padT + plotH - y));
     // thin edge line for context (the other side of the sweep band)
-    ctx.strokeStyle = "rgba(240,80,110,0.6)";
+    ctx.strokeStyle = "rgba(248,81,73,0.6)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(xL, yOther);
     ctx.lineTo(xR, yOther);
     ctx.stroke();
     // thick edge line: the hard revert threshold
-    ctx.strokeStyle = "#f0506e";
+    ctx.strokeStyle = "#f85149";
     ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.moveTo(xL, y);
     ctx.lineTo(xR, y);
     ctx.stroke();
-    ctx.fillStyle = "#f0506e";
+    ctx.fillStyle = "#f85149";
     ctx.font = "700 10px ui-sans-serif, system-ui";
     const outAsset = s.txn.side === "BUY" ? s.txn.asset : USDC;
     ctx.fillText(s.valid ? `MIN ${s.txn.minAmountOut} ${outAsset}` : "REVERTS", xL + 5, y - 5);
@@ -838,14 +845,14 @@ function drawGraph(level: Level, execFrac?: number): void {
   if (playing && playheadX !== Infinity) {
     ctx.save();
     const grad = ctx.createLinearGradient(playheadX - 6, 0, playheadX + 6, 0);
-    grad.addColorStop(0, "rgba(88,166,255,0)");
-    grad.addColorStop(0.5, "rgba(88,166,255,0.55)");
-    grad.addColorStop(1, "rgba(88,166,255,0)");
+    grad.addColorStop(0, "rgba(45,212,232,0)");
+    grad.addColorStop(0.5, "rgba(45,212,232,0.55)");
+    grad.addColorStop(1, "rgba(45,212,232,0)");
     ctx.fillStyle = grad;
-    ctx.fillRect(playheadX - 6, padT, 12, plotH); // soft glow band
-    ctx.strokeStyle = "rgba(160,205,255,0.95)";
+    ctx.fillRect(playheadX - 6, padT, 12, plotH); // soft glow band (--cyan = live)
+    ctx.strokeStyle = "rgba(150,235,245,0.95)";
     ctx.lineWidth = 1.5;
-    ctx.shadowColor = "rgba(88,166,255,0.9)";
+    ctx.shadowColor = "rgba(45,212,232,0.9)";
     ctx.shadowBlur = 10;
     ctx.beginPath();
     ctx.moveTo(playheadX, padT);
@@ -853,7 +860,7 @@ function drawGraph(level: Level, execFrac?: number): void {
     ctx.stroke();
     ctx.shadowBlur = 0;
     // little triangle marker at the top of the sweep line
-    ctx.fillStyle = "rgba(160,205,255,0.95)";
+    ctx.fillStyle = "rgba(150,235,245,0.95)";
     ctx.beginPath();
     ctx.moveTo(playheadX - 5, padT);
     ctx.lineTo(playheadX + 5, padT);
@@ -1096,10 +1103,43 @@ function stateAtFrac(exec: CurrentExecution, frac: number): State {
 }
 
 function stopExecution(): void {
+  hideRelay(); // also dismiss the bundle-relay overlay if one is mid-play
   if (!currentExecution) return;
   cancelAnimationFrame(currentExecution.raf);
   currentExecution = null;
   document.body.classList.remove("playing");
+}
+
+// ---------------------------------------------------------------------
+// Bundle relay: the teaching beat AFTER the block sweep finishes and BEFORE
+// the result. A pure-CSS scene plays "your ordered bundle -> block builder ->
+// block forms -> broadcast to the network", then we proceed to the result.
+// Skippable (click anywhere) so repeated simulates don't drag. The CSS
+// animations (in index.html) restart every time #relay flips display:none->grid.
+// ---------------------------------------------------------------------
+const RELAY_MS = 5000; // must track the CSS scene length (~4.8s) + a small tail
+let relayTimer = 0;
+
+function hideRelay(): void {
+  const relay = document.getElementById("relay");
+  if (relay) relay.classList.add("hidden");
+  clearTimeout(relayTimer);
+}
+
+function playRelay(onDone: () => void): void {
+  const relay = document.getElementById("relay");
+  if (!relay) { onDone(); return; } // fail open: never swallow the result
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    hideRelay();
+    relay.onclick = null;
+    onDone();
+  };
+  relay.classList.remove("hidden"); // display none->grid restarts the CSS scene
+  relay.onclick = finish;           // click anywhere to skip
+  relayTimer = window.setTimeout(finish, RELAY_MS);
 }
 
 // Kick off a run. `mode` only differs at the finish line: "submit" reveals the
@@ -1156,7 +1196,8 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
     renderInventory(level, exec.state);
     currentExecution = null;
     document.body.classList.remove("playing");
-    showResult(level, exec.sims, mode);
+    // Play the bundle-relay scene, THEN reveal the result.
+    playRelay(() => showResult(level, exec.sims, mode));
   };
   exec.raf = requestAnimationFrame(tick);
 }
@@ -1205,6 +1246,28 @@ function calculateSettlement(grossGains: number, transactionCount: number): Sett
 function hideResult(): void {
   const box = document.getElementById("result");
   if (box) box.classList.add("hidden");
+}
+
+// Celebratory confetti burst on a level pass. Pure UI flourish: spawns coloured
+// pieces into the full-screen result overlay, each animated by CSS (fall + spin)
+// and self-removed once its animation finishes.
+function spawnConfetti(): void {
+  const layer = document.getElementById("result");
+  if (!layer) return;
+  const colors = ["var(--profit)", "var(--cyan)", "var(--asset-1)", "var(--asset-2)", "var(--asset-4)", "var(--asset-5)"];
+  for (let i = 0; i < 48; i++) {
+    const p = document.createElement("div");
+    p.className = "confetti-piece";
+    p.style.left = Math.random() * 100 + "%";
+    p.style.background = colors[Math.floor(Math.random() * colors.length)];
+    const dur = 2.4 + Math.random() * 1.6;
+    p.style.animationDuration = dur + "s";
+    p.style.animationDelay = Math.random() * 0.5 + "s";
+    p.style.width = 6 + Math.random() * 6 + "px";
+    p.style.height = 10 + Math.random() * 8 + "px";
+    layer.appendChild(p);
+    setTimeout(() => p.remove(), (dur + 1) * 1000);
+  }
 }
 
 function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "submit"): void {
@@ -1266,7 +1329,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   box.innerHTML = `<div class="result-card">
     <div class="result-title">${mode === "simulate" ? "Simulated" : "Submitted"} block · Level ${levelIdx + 1}</div>
     <div class="result-hash">${hash}</div>
-    <div class="result-profit">${sign}${money(settlement.botProfit)} bot profit</div>
+    <div class="result-profit">${sign}<span id="result-profit-num">${money(0)}</span> bot profit</div>
     <div class="result-grid">
       <div class="result-row"><span>Victim funds lost</span><strong>${money(victimLoss)}</strong></div>
       <div class="result-row"><span>Profit before bribe</span><strong>${money(settlement.profitBeforeBribe)}</strong></div>
@@ -1284,6 +1347,24 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   if (closeBtn) closeBtn.onclick = () => { hideResult(); drawGraph(level); };
   const nextBtn = document.getElementById("result-next");
   if (nextBtn) nextBtn.onclick = () => { hideResult(); loadLevel(currentLevelIdx + 1); };
+
+  // Count the headline profit up from $0 — purely a reveal flourish (the value
+  // is already decided). easeOutCubic so it decelerates into the final number.
+  const numEl = document.getElementById("result-profit-num");
+  if (numEl) {
+    const target = settlement.botProfit;
+    const dur = 700;
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const k = Math.min(1, (now - t0) / dur);
+      const eased = 1 - Math.pow(1 - k, 3);
+      numEl.textContent = money(target * eased);
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  if (passed) spawnConfetti();
 }
 
 // Swap the whole board over to a level: rebuild the palette, inventory, an empty
@@ -1298,8 +1379,26 @@ function loadLevel(idx: number): void {
   buildInventory(currentLevel);
   buildBlock();
   buildMempool(currentLevel);
+  updateObjective(currentLevel);
   drawGraph(currentLevel);
   updateLevelNav();
+}
+
+// Fill the always-visible objective banner from the level's OWN data (target +
+// victim count) — no spoilers. The strategy `hint` is tucked into a native
+// <details> the player can open on demand (zero JS: the browser toggles it).
+function updateObjective(level: Level): void {
+  const el = document.getElementById("objective");
+  if (!el) return;
+  const n = LEVELS.indexOf(level) + 1;
+  const vics = level.victims.length;
+  el.innerHTML = `
+    <div class="obj-row">
+      <span class="obj-badge">Level ${n}</span>
+      <span class="obj-goal">Extract <strong>&ge; $${level.profitThreshold.toFixed(2)}</strong> profit</span>
+      <span class="obj-meta">${vics} victim trade${vics === 1 ? "" : "s"} in the mempool · finish holding only USDC</span>
+    </div>
+    <details class="obj-hint"><summary>\u{1F4A1} Need a hint?</summary><p>${level.hint}</p></details>`;
 }
 
 // Reflect the current level in the bottom-left nav (label + disabled bounds).
@@ -1315,6 +1414,19 @@ function updateLevelNav(): void {
 function main(): void {
   setupDragging();
   loadLevel(0);
+
+  // Hover-link: lighting up a block box's price column in the chart makes
+  // "the price above this box is what this box did" obvious. Purely visual;
+  // skipped while a playback runs (the block is frozen then).
+  blockArea.addEventListener("mouseover", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>(".txn");
+    const id = el?.dataset.id ?? null;
+    if (id !== hoveredId) { hoveredId = id; if (!currentExecution) drawGraph(currentLevel); }
+  });
+  blockArea.addEventListener("mouseleave", () => {
+    if (hoveredId !== null) { hoveredId = null; if (!currentExecution) drawGraph(currentLevel); }
+  });
+
   window.addEventListener("resize", () => {
     // Mid-playback the rAF loop repaints anyway; only redraw here when idle.
     if (!currentExecution) drawGraph(currentLevel);
