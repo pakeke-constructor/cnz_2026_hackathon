@@ -14,14 +14,14 @@ Players don't want to be fudging around with addresses and slippage-tolerances. 
 
 ## Game:
 You play as an MEV searcher:
-You are given a blob of unordered user transactions in the public mempool, (represented as little boxes,) and the objective is to rearrange the victim's boxes (and insert your own transactions as boxes) in a way that maximize your own profit.
+You are given a blob of unordered user transactions in the public mempool, (represented as little boxes,) and the objective is to rearrange the victim's boxes (and insert your own transactions as boxes) in a way that maximizes your own profit.
 
 By making the UI and UX extremely simple, minimal, and generic, Sandwiching and atomic arbitrage strategies fall out automatically.
 
 If you miss any MEV opportunities, you will see a competing bot come in and swoop up the opportunities, outbidding you.
 
 ## Further details:
-After submitting your answer, you can see the blocks execute sequentially; and you see prices update in real time.
+After submitting your answer, you can see the blocks execute sequentially; and you see prices update in real time. (Graph visual at top of screen.)
 
 Here's what I'd want to add:
 
@@ -78,11 +78,43 @@ Left sidebar: This is where you go to create a new transaction. Drag and drop fr
 Bottom-right buttons: Simulate, and Submit. Simulate tests the block, without saying whether it's optimal. Submit will properly submit it, and let you know whether your solution is optimal.
 
 
-## ARCHITECTURE / TECH-STACK:
-Use basic JS + HTML.
-Don't use any framework for now.
+## TECH-STACK:
+Use basic JS + HTML. 
+Two files: 1 html file, 1 js file. Keep it super minimal and simple for now.
+Use sortable.js for box rendering.
 
-TODO: What should we use for input management, and draggable boxes and stuff?
-Maybe three.js or something? Or maybe JS canvases? Or maybe we represent boxes as divs?
-Or use a library? What's a good way to do this?
+## ARCHITECTURE:
+```ts
+class Level {
+    // contains stuff for a level
+}
+
+class LP {
+    asset1: string
+    asset2: string
+    pool1: number
+    pool2: number
+}
+
+class State {
+    // this is the object that is created and "walks forwards" as transactions execute.
+    // this essentially contains the entire blockchain state.
+}
+
+type Mempool = List<VictimTransaction>
+type Block = List<Transaction>
+
+
+class Transaction {
+    
+}
+
+class VictimTransaction extends Transaction {
+    asset1: string
+    asset2: string
+}
+
+
+
+```
 
