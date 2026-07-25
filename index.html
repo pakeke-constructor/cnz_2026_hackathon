@@ -220,6 +220,10 @@
       box-shadow: 0 6px 16px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.03) inset;
     }
     .txn:active { cursor: grabbing; transform: translateY(0); }
+    /* forceFallback drags a clone of .txn as the ghost; its inherited
+       `transition: transform` would animate every per-frame reposition,
+       making the ghost ease toward (and trail) the cursor. Snap it instead. */
+    .sortable-fallback { transition: none !important; }
 
     /* header row: direction arrow + action label */
     .txn .action {
@@ -316,8 +320,10 @@
     }
     #controls button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.28); }
     #controls button:active { transform: translateY(0); }
-    #btn-simulate { background: linear-gradient(180deg, #2ea043, #247d34); border-color: rgba(46,160,67,.7); }
-    #btn-simulate:hover { border-color: var(--buy); }
+    /* Must out-specify `#controls button` above (id+type beats a bare id),
+       otherwise its panel-2 background overrides this green one. */
+    #controls #btn-simulate { background: linear-gradient(180deg, #2ea043, #247d34); border-color: rgba(46,160,67,.7); }
+    #controls #btn-simulate:hover { border-color: var(--buy); }
     body.playing #controls button { opacity: .5; pointer-events: none; }
     body.playing #block-area,
     body.playing #mempool,

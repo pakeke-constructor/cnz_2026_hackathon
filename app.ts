@@ -1113,7 +1113,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
     const list = exposed
       .map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset} (should be ${Math.round(x.start).toLocaleString()})`)
       .join(", ");
-    warn = `<div class="result-warn">Your inventory didn't return to where it started: ${list}. Trade back to your starting inventory to lock in your profit and avoid exposure to the next block's price move!</div>`;
+    warn = `<div class="result-warn">Your inventory didn't return to where it started.\nYou have ${list}. Trade back to your starting inventory to lock in your profit and avoid exposure to the next block's price move!</div>`;
   }
 
   const box = document.getElementById("result") as HTMLElement;
