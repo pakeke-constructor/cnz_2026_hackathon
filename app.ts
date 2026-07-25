@@ -137,6 +137,22 @@ class Swap extends Transaction {
   }
 }
 
+// A no-op transaction: it steps the chain forward but changes nothing. The
+// block's "start"/"end" spacer boxes are backed by these, so they flow through
+// the SAME simulation and rendering path as real transactions — they just
+// leave every price where it was (a flat segment on the graph).
+class Noop extends Transaction {
+  constructor(id: string, readonly text: string) {
+    super(id, "SYSTEM");
+  }
+  simulate(s: State): State {
+    return s;
+  }
+  label(): string {
+    return this.text;
+  }
+}
+
 // ---------------------------------------------------------------------
 // Player order factories — the sidebar palette is built from these.
 // ---------------------------------------------------------------------
@@ -188,28 +204,33 @@ function initialState(level: Level): State {
 }
 
 // ---------------------------------------------------------------------
-// Simulation: walk the block, record EVERY pool's price after each txn.
-// Each asset gets its own price series so the graph can draw one line per
-// asset. A transaction only moves one pool; the others carry forward
-// unchanged, so every series has one point per transaction.
+// Simulation: walk the block box-by-box, recording EVERY pool's price
+// BEFORE and AFTER each box. One entry per box (spacers included — their
+// Noop leaves prices unchanged). The graph draws each box as a segment from
+// its before-price to its after-price, so a transaction visibly moves the
+// price across its own width, and a spacer is simply flat.
 // ---------------------------------------------------------------------
-interface SimResult {
-  readonly assets: readonly Asset[];
-  readonly start: ReadonlyMap<Asset, number>;      // price before the block
-  readonly series: ReadonlyMap<Asset, number[]>;   // price AFTER each txn
-  readonly finalState: State;
+interface BoxSim {
+  readonly el: HTMLElement;
+  readonly txn: Transaction;
+  readonly before: ReadonlyMap<Asset, number>;
+  readonly after: ReadonlyMap<Asset, number>;
 }
 
-function simulate(level: Level, block: readonly Transaction[]): SimResult {
+function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
+  assets: readonly Asset[];
+  sims: readonly BoxSim[];
+} {
   const assets = level.pools.map((p) => p.asset);
   let s = initialState(level);
-  const start = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-  const series = new Map<Asset, number[]>(assets.map((a) => [a, []]));
-  for (const txn of block) {
+  const sims: BoxSim[] = [];
+  for (const { el, txn } of boxes) {
+    const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
     s = txn.simulate(s);
-    for (const a of assets) series.get(a)!.push(s.price(a));
+    const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
+    sims.push({ el, txn, before, after });
   }
-  return { assets, start, series, finalState: s };
+  return { assets, sims };
 }
 
 // ---------------------------------------------------------------------
@@ -266,20 +287,34 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
   return el;
 }
 
-// Read the block order straight from the DOM and resolve to Transactions.
-function readBlock(blockArea: HTMLElement): Transaction[] {
-  const out: Transaction[] = [];
+// The block's execution order is its VISUAL left-to-right order (the single
+// source of truth). We read every child that resolves to a transaction —
+// including the pinned spacer boxes — and sort by on-screen x. Because the
+// graph measures the same rectangles, boxes and price line always agree.
+interface BlockBox {
+  readonly el: HTMLElement;
+  readonly txn: Transaction;
+}
+
+function readBlock(): BlockBox[] {
+  const boxes: BlockBox[] = [];
   for (const child of Array.from(blockArea.children)) {
-    const id = (child as HTMLElement).dataset.id;
-    const txn = id ? txnById.get(id) : undefined;
-    if (txn) out.push(txn);
+    const el = child as HTMLElement;
+    const txn = el.dataset.id ? txnById.get(el.dataset.id) : undefined;
+    if (txn) boxes.push({ el, txn });
   }
-  return out;
+  boxes.sort(
+    (a, b) => a.el.getBoundingClientRect().left - b.el.getBoundingClientRect().left
+  );
+  return boxes;
 }
 
 // ---------------------------------------------------------------------
-// Graph: price over the block. X positions are measured from the actual
-// transaction boxes so the line lines up EXACTLY with each box's center.
+// Graph: price over the block. Each box is drawn as a segment spanning its
+// OWN width — from the price before it ran to the price after — so a
+// transaction visibly walks the price across itself and spacers are flat.
+// The X of every point is read from the real box rectangles, so the line
+// lines up EXACTLY with the boxes below.
 // ---------------------------------------------------------------------
 const graph = document.getElementById("graph") as HTMLCanvasElement;
 const graphWrap = document.getElementById("graph-wrap") as HTMLElement;
@@ -306,16 +341,27 @@ function drawGraph(level: Level): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cssW, cssH);
 
-  const block = readBlock(blockArea);
-  const { assets, start, series } = simulate(level, block);
+  const boxes = readBlock();
+  const { assets, sims } = simulateBoxes(level, boxes);
+  blockArea.classList.toggle(
+    "has-txns",
+    boxes.some((b) => !(b.txn instanceof Noop))
+  );
+
+  // Each box's left/right edge in canvas space. A box owns the span [xL, xR];
+  // the price enters at xL (before) and leaves at xR (after).
+  const wrapRect = graphWrap.getBoundingClientRect();
+  const edgesOf = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return { xL: r.left - wrapRect.left, xR: r.right - wrapRect.left };
+  };
 
   // ----- Y scale: auto-fit, but always at least the [0..50] window -----
   const allPrices: number[] = [];
-  for (const a of assets) {
-    allPrices.push(start.get(a)!);
-    for (const p of series.get(a)!) allPrices.push(p);
-  }
-  const pMax = allPrices.length ? Math.max(...allPrices) : 0;
+  for (const s of sims)
+    for (const a of assets) allPrices.push(s.before.get(a)!, s.after.get(a)!);
+  for (const p of level.pools) allPrices.push(p.price);
+  const pMax = Math.max(...allPrices);
   const Y_LO = 0;
   const Y_HI = Math.max(Y_MIN_TOP, Math.ceil((pMax * 1.1) / 10) * 10);
   const padL = 44, padR = 12, padT = 10, padB = 14;
@@ -323,26 +369,6 @@ function drawGraph(level: Level): void {
   const rightX = cssW - padR;
   const yOf = (price: number) =>
     padT + plotH * (1 - (price - Y_LO) / (Y_HI - Y_LO));
-
-  // ----- X positions: measured from the real boxes below -----
-  // Two immovable spacer boxes pad the block (see index.html). The price line
-  // rides FLAT across the lead spacer (start price) and the trail spacer
-  // (final price); the real transaction boxes sit in between. All positions
-  // come from live layout, so nothing is hardcoded.
-  const wrapRect = graphWrap.getBoundingClientRect();
-  const centerX = (el: HTMLElement): number => {
-    const r = el.getBoundingClientRect();
-    return r.left + r.width / 2 - wrapRect.left;
-  };
-  const realBoxes = (Array.from(blockArea.children) as HTMLElement[]).filter(
-    (el) => el.dataset.id && txnById.has(el.dataset.id)
-  );
-  const leadEl = blockArea.querySelector('[data-spacer="lead"]') as HTMLElement | null;
-  const trailEl = blockArea.querySelector('[data-spacer="trail"]') as HTMLElement | null;
-  const leadX = leadEl ? centerX(leadEl) : padL;
-  const trailX = trailEl ? centerX(trailEl) : rightX;
-
-  blockArea.classList.toggle("has-txns", realBoxes.length > 0);
 
   // ----- gridlines + Y labels -----
   ctx.strokeStyle = "#2a3242";
@@ -360,20 +386,17 @@ function drawGraph(level: Level): void {
     ctx.fillText(price.toFixed(0), 6, y + 4);
   }
 
-  // ----- vertical guide under each transaction box -----
-  ctx.strokeStyle = "rgba(88,166,255,0.15)";
-  for (const el of realBoxes) {
-    const x = centerX(el);
-    ctx.beginPath();
-    ctx.moveTo(x, padT);
-    ctx.lineTo(x, cssH - padB);
-    ctx.stroke();
+  // ----- faint column behind each price-changing (non-spacer) box -----
+  ctx.fillStyle = "rgba(88,166,255,0.06)";
+  for (const s of sims) {
+    if (s.txn instanceof Noop) continue;
+    const { xL, xR } = edgesOf(s.el);
+    ctx.fillRect(xL, padT, xR - xL, plotH);
   }
 
   // ----- one line per asset -----
-  // Flat across the lead spacer at the start price, step once per transaction,
-  // then flat across the trail spacer at the LAST SEEN price out to the right
-  // edge. With no transactions it's a single flat line at the current price.
+  // Walk the boxes in order. For each box draw before->after across its width;
+  // the flat gaps between boxes connect automatically (before == prev after).
   const drawDot = (x: number, y: number) => {
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, Math.PI * 2);
@@ -382,34 +405,41 @@ function drawGraph(level: Level): void {
 
   for (const asset of assets) {
     const color = assetColor(assets, asset);
-    const startPrice = start.get(asset)!;
-    const pts = series.get(asset)!;
-    const n = Math.min(pts.length, realBoxes.length);
-    const lastPrice = n ? pts[n - 1] : startPrice;
 
-    // line
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(padL, yOf(startPrice));      // flat lead-in from the plot edge
-    ctx.lineTo(leadX, yOf(startPrice));     // ...across the lead spacer
-    for (let i = 0; i < n; i++) ctx.lineTo(centerX(realBoxes[i]), yOf(pts[i]));
-    ctx.lineTo(trailX, yOf(lastPrice));     // flat across the trail spacer
-    ctx.lineTo(rightX, yOf(lastPrice));     // ...out to the right edge
+    sims.forEach((s, i) => {
+      const { xL, xR } = edgesOf(s.el);
+      const yB = yOf(s.before.get(asset)!);
+      const yA = yOf(s.after.get(asset)!);
+      if (i === 0) ctx.moveTo(xL, yB);
+      else ctx.lineTo(xL, yB); // flat across the gap from the previous box
+      ctx.lineTo(xR, yA);
+    });
     ctx.stroke();
 
-    // dots: start price, each resulting price, final price
+    // dots at every box boundary (start of first box, then each box's end)
     ctx.fillStyle = color;
-    drawDot(leadX, yOf(startPrice));
-    for (let i = 0; i < n; i++) drawDot(centerX(realBoxes[i]), yOf(pts[i]));
-    drawDot(trailX, yOf(lastPrice));
+    if (sims.length) {
+      const first = edgesOf(sims[0].el);
+      drawDot(first.xL, yOf(sims[0].before.get(asset)!));
+      for (const s of sims) {
+        const { xR } = edgesOf(s.el);
+        drawDot(xR, yOf(s.after.get(asset)!));
+      }
+    }
 
-    // asset label riding the flat tail on the right
-    ctx.fillStyle = color;
-    ctx.font = "600 11px ui-sans-serif, system-ui";
-    ctx.textAlign = "right";
-    ctx.fillText(asset, rightX - 2, yOf(lastPrice) - 5);
-    ctx.textAlign = "left";
+    // asset label riding the final flat (end-spacer) segment
+    if (sims.length) {
+      const last = sims[sims.length - 1];
+      const { xR } = edgesOf(last.el);
+      ctx.fillStyle = color;
+      ctx.font = "600 11px ui-sans-serif, system-ui";
+      ctx.textAlign = "right";
+      ctx.fillText(asset, xR - 2, yOf(last.after.get(asset)!) - 5);
+      ctx.textAlign = "left";
+    }
   }
 }
 
@@ -446,9 +476,12 @@ function buildPalette(level: Level): void {
 // to ride across, marking where the price starts and ends. They are not `.txn`
 // elements, so Sortable's `draggable: ".txn"` leaves them untouched.
 function spacerEl(kind: "lead" | "trail"): HTMLElement {
+  const id = kind; // stable ids "lead"/"trail"
+  txnById.set(id, new Noop(id, kind === "lead" ? "start" : "end"));
   const el = document.createElement("div");
   el.className = "spacer";
   el.dataset.spacer = kind;
+  el.dataset.id = id; // resolves to the Noop, so it flows through the sim
   el.textContent = kind === "lead" ? "start" : "end";
   return el;
 }
