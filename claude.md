@@ -46,7 +46,7 @@ With levels, we would progressively provide more and more MEV opportunities for 
 level 1: classic buy-side sandwich, 1 victim
 level 2: classic buy-side sandwich, 2 victims chained
 level 2: classic buy-side sandwich, 2 victims, but only 1 transaction fits. User must choose txn with best slippage tolerance.
-level 3: triangular atomic arb
+level 3: triangular atomic arb (3 different assets)
 level 4: 2 triangular arbs
 level N: 8 victim buy-side sandwich
 ---- (SCOPE CREEP: Anything below this line is potentially beyond scope.)
@@ -84,9 +84,13 @@ Two files: 1 html file, 1 js file. Keep it super minimal and simple for now.
 Use sortable.js for box rendering.
 
 ## ARCHITECTURE:
+IMPORTANT: ALL DATA SHOULD BE IMMUTABLE.
+Makes stuff simpler and less error prone.
 ```ts
 class Level {
-    // contains stuff for a level
+    // contains stuff for a level.
+    transactions: List<VictimTransaction> 
+    state: State
 }
 
 class LP {
@@ -96,9 +100,24 @@ class LP {
     pool2: number
 }
 
+type Owner = string
+type Asset = string
+
 class State {
     // this is the object that is created and "walks forwards" as transactions execute.
     // this essentially contains the entire blockchain state.
+    // (This object is immutable! Returns copies of itself.)
+
+    currentTxn = 0 // the current txn that's executing.
+    balances: Map<Owner, Map<Asset, number>>
+    pools: List<LP>
+
+    step(): [State, boolean] {
+        // this function returns a clone of itself with updated values.
+        // think of it as "stepping forward 1 transaction" in the block.
+        const isFinished = false;
+        return new State(...), isFinished
+    }
 }
 
 type Mempool = List<VictimTransaction>
@@ -106,7 +125,7 @@ type Block = List<Transaction>
 
 
 class Transaction {
-    
+    simulate(s: State): State {}
 }
 
 class VictimTransaction extends Transaction {
