@@ -215,6 +215,10 @@ interface BoxSim {
   readonly txn: Transaction;
   readonly before: ReadonlyMap<Asset, number>;
   readonly after: ReadonlyMap<Asset, number>;
+  // The PLAYER's balance of this box's traded asset just BEFORE it executes.
+  // Used to cap a SELL slider so you can't sell more than you're holding at
+  // that point in the block. NaN for boxes that aren't player swaps.
+  readonly playerAssetBefore: number;
 }
 
 function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
@@ -226,9 +230,13 @@ function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
   const sims: BoxSim[] = [];
   for (const { el, txn } of boxes) {
     const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
+    const playerAssetBefore =
+      txn instanceof Swap && txn.owner === "PLAYER"
+        ? s.balance("PLAYER", txn.asset)
+        : NaN;
     s = txn.simulate(s);
     const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-    sims.push({ el, txn, before, after });
+    sims.push({ el, txn, before, after, playerAssetBefore });
   }
   return { assets, sims };
 }
@@ -250,6 +258,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
   const el = document.createElement("div");
   el.className = "txn " + (swap.side === "BUY" ? "buy" : "sell");
   if (opts.victim) el.classList.add("victim");
+  if (opts.editable) el.classList.add("mine"); // player's own, discardable txn
   el.dataset.id = txn.id;
 
   const action = document.createElement("div");
@@ -331,6 +340,31 @@ function assetColor(assets: readonly Asset[], asset: Asset): string {
   return ASSET_COLORS[(i < 0 ? 0 : i) % ASSET_COLORS.length];
 }
 
+// Update each editable SELL box's slider so its max never exceeds the player's
+// holdings of that asset when the box runs. Returns true if any current value
+// had to be clamped down (meaning quantities changed and the caller should
+// re-simulate).
+function capSellSliders(sims: readonly BoxSim[]): boolean {
+  let clamped = false;
+  for (const s of sims) {
+    if (!(s.txn instanceof Swap) || s.txn.side !== "SELL") continue;
+    const slider = s.el.querySelector<HTMLInputElement>("input.qty");
+    if (!slider) continue; // victims aren't editable
+
+    const cap = Math.max(0, Math.floor(s.playerAssetBefore));
+    slider.max = String(cap);
+    if (Number(slider.value) > cap) {
+      slider.value = String(cap);
+      const cur = txnById.get(s.txn.id) as Swap;
+      txnById.set(s.txn.id, cur.withQty(cap)); // immutable edit
+      const amt = s.el.querySelector<HTMLElement>(".amt");
+      if (amt) amt.textContent = `${cap} ${cur.asset}`;
+      clamped = true;
+    }
+  }
+  return clamped;
+}
+
 function drawGraph(level: Level): void {
   const ctx = graph.getContext("2d")!;
   const dpr = window.devicePixelRatio || 1;
@@ -347,6 +381,15 @@ function drawGraph(level: Level): void {
     "has-txns",
     boxes.some((b) => !(b.txn instanceof Noop))
   );
+
+  // Cap every SELL slider at the player's inventory of that asset at the moment
+  // the box runs — you can't sell DOGE you don't hold yet. Clamping a slider
+  // down only ever frees up inventory for later boxes, so re-simulating once is
+  // enough to settle; we redraw with the corrected quantities and bail.
+  if (capSellSliders(sims)) {
+    drawGraph(level);
+    return;
+  }
 
   // Each box's left/right edge in canvas space. A box owns the span [xL, xR];
   // the price enters at xL (before) and leaves at xR (after).
@@ -406,18 +449,42 @@ function drawGraph(level: Level): void {
   for (const asset of assets) {
     const color = assetColor(assets, asset);
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
+    // Draw box-by-box rather than as one path, so a box that is one of the
+    // PLAYER's own transactions can be rendered bold + glowing — making it
+    // obvious on the graph exactly where YOUR trades move the price.
+    let prevX = 0, prevY = 0;
     sims.forEach((s, i) => {
       const { xL, xR } = edgesOf(s.el);
       const yB = yOf(s.before.get(asset)!);
       const yA = yOf(s.after.get(asset)!);
-      if (i === 0) ctx.moveTo(xL, yB);
-      else ctx.lineTo(xL, yB); // flat across the gap from the previous box
+
+      // Flat connector across the gap from the previous box (always normal).
+      if (i > 0) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(xL, yB);
+        ctx.stroke();
+      }
+
+      // The box's own segment: bold + glow when it's the player's trade.
+      const mine = s.txn.owner === "PLAYER";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = mine ? 4 : 2;
+      if (mine) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+      }
+      ctx.beginPath();
+      ctx.moveTo(xL, yB);
       ctx.lineTo(xR, yA);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      prevX = xR;
+      prevY = yA;
     });
-    ctx.stroke();
 
     // dots at every box boundary (start of first box, then each box's end)
     ctx.fillStyle = color;
@@ -505,6 +572,15 @@ function setupDragging(level: Level): void {
   const palette = document.getElementById("palette") as HTMLElement;
   const onChange = () => drawGraph(level);
 
+  // While a player's own box is being dragged, turn the mempool into a red
+  // "drop to cancel" zone. Any drag that starts on a `.mine` box lights it up.
+  const onStart = (evt: any) => {
+    if ((evt.item as HTMLElement).classList.contains("mine")) {
+      mempool.classList.add("cancel-mode");
+    }
+  };
+  const onEnd = () => mempool.classList.remove("cancel-mode");
+
   // Block: the ordered list the player submits.
   Sortable.create(blockArea, {
     group: { name: "txns", pull: true, put: true },
@@ -513,6 +589,8 @@ function setupDragging(level: Level): void {
     draggable: ".txn",         // spacers aren't `.txn`, so they never move
     filter: "input",           // let the qty slider work without starting a drag
     preventOnFilter: false,
+    onStart,
+    onEnd,
     onSort: onChange,
     onAdd: (evt: any) => {
       // Dropped in from the palette: replace the template clone with a real,
@@ -528,12 +606,27 @@ function setupDragging(level: Level): void {
     },
   });
 
-  // Mempool: victims can be pulled into the block (and back).
+  // Mempool: victims can be pulled into the block (and back). Dropping one of
+  // the PLAYER's own transactions here DISCARDS it — that's how you throw a
+  // trade away. Stray palette clones dropped here are junk and removed too.
   Sortable.create(mempool, {
     group: { name: "txns", pull: true, put: true },
     animation: 150,
     forceFallback: true,
+    onStart,
+    onEnd,
     onSort: onChange,
+    onAdd: (evt: any) => {
+      const el: HTMLElement = evt.item;
+      const id = el.dataset.id;
+      const txn = id ? txnById.get(id) : undefined;
+      if (!txn || txn.owner === "PLAYER") {
+        if (id && txn && txn.owner === "PLAYER") txnById.delete(id);
+        el.remove();
+      }
+      mempool.classList.remove("cancel-mode");
+      onChange();
+    },
   });
 
   // Palette: a source of templates. pull:'clone' leaves the template behind.
