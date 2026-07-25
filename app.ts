@@ -30,13 +30,32 @@ type Owner = string; // "PLAYER" is the player; others are victims.
 type Asset = string;
 type Side = "BUY" | "SELL";
 
-const USDC: Asset = "USDC"; // the numeraire every pool is quoted in.
+const USDC: Asset = "USDC"; // the base numeraire; most pools are quoted in it.
 
-// Linear AMM pool: its ENTIRE state is a current price (slope = 1).
-// BUY(DOGE) == swap USDC -> DOGE and pushes price up; SELL pushes it down.
+// Linear AMM pool between two assets. Its ENTIRE state is a current price
+// (quote per base, slope = 1). BUY(base) spends quote to acquire base and
+// pushes price up; SELL does the reverse. Most pools quote in USDC, but a
+// cross pool (e.g. DOGE priced in XRP) is what makes triangular arb possible.
 interface LP {
-  readonly asset: Asset;
-  readonly price: number;
+  readonly asset: Asset;   // the base asset
+  readonly quote?: Asset;  // what it's priced in (defaults to USDC)
+  readonly price: number;  // quote per base
+}
+
+type PoolId = string;
+function poolKey(base: Asset, quote: Asset): PoolId {
+  return `${base}/${quote}`;
+}
+function poolQuote(p: LP): Asset {
+  return p.quote ?? USDC;
+}
+
+// Every distinct asset a level touches (USDC first), for the inventory panel.
+function assetsOf(level: Level): Asset[] {
+  const seen: Asset[] = [USDC];
+  for (const p of level.pools)
+    for (const a of [p.asset, poolQuote(p)]) if (!seen.includes(a)) seen.push(a);
+  return seen;
 }
 
 // ---------------------------------------------------------------------
@@ -44,22 +63,26 @@ interface LP {
 // ---------------------------------------------------------------------
 class State {
   constructor(
-    readonly pools: ReadonlyMap<Asset, LP>,
+    readonly pools: ReadonlyMap<PoolId, LP>,
     readonly balances: ReadonlyMap<Owner, ReadonlyMap<Asset, number>>
   ) {}
 
-  price(asset: Asset): number {
-    return this.pools.get(asset)?.price ?? NaN;
+  pool(base: Asset, quote: Asset): LP | undefined {
+    return this.pools.get(poolKey(base, quote));
+  }
+
+  price(base: Asset, quote: Asset = USDC): number {
+    return this.pool(base, quote)?.price ?? NaN;
   }
 
   balance(owner: Owner, asset: Asset): number {
     return this.balances.get(owner)?.get(asset) ?? 0;
   }
 
-  // Return a copy with `asset`'s pool set to `price`.
-  withPrice(asset: Asset, price: number): State {
+  // Return a copy with one pool's price updated.
+  withPrice(base: Asset, quote: Asset, price: number): State {
     const pools = new Map(this.pools);
-    pools.set(asset, { asset, price });
+    pools.set(poolKey(base, quote), { asset: base, quote, price });
     return new State(pools, this.balances);
   }
 
@@ -87,8 +110,10 @@ abstract class Transaction {
   abstract label(): string;
 }
 
-// A swap against a USDC-quoted linear pool, expressed intuitively as
-// "Buy DOGE" / "Sell DOGE" rather than raw assetIn/assetOut.
+// A swap against a linear pool, expressed intuitively as "Buy DOGE" /
+// "Sell DOGE" rather than raw assetIn/assetOut. Normal pools trade against
+// USDC; a cross pool trades base against another asset (`quote`), e.g.
+// "Buy DOGE with XRP" — that's the third leg a triangular arb needs.
 //
 // Trapezoid (average-price) fill — this is what makes the game glitch-free:
 //   Buy  q: cost     = q * (p + q/2), price -> p + q
@@ -98,6 +123,7 @@ abstract class Transaction {
 // only possible when someone ELSE moves the price between your buy and sell —
 // which is precisely MEV.
 class Swap extends Transaction {
+  readonly quote: Asset;
   constructor(
     id: string,
     owner: Owner,
@@ -105,9 +131,11 @@ class Swap extends Transaction {
     readonly side: Side,
     readonly qty: number,
     readonly minAmountOut?: number,
-    readonly amountIn?: number
+    readonly amountIn?: number,
+    quote: Asset = USDC
   ) {
     super(id, owner);
+    this.quote = quote;
   }
 
   private buyAmountOut(price: number): number {
@@ -136,7 +164,7 @@ class Swap extends Transaction {
 
   isValid(s: State): boolean {
     if (this.minAmountOut === undefined) return true;
-    const p = s.price(this.asset);
+    const p = s.price(this.asset, this.quote);
     if (this.side === "BUY") return this.buyAmountOut(p) >= this.minAmountOut - 1e-9;
     return this.qty * (p - this.qty / 2) >= this.minAmountOut - 1e-9;
   }
@@ -144,20 +172,20 @@ class Swap extends Transaction {
   simulate(s: State): State {
     if (!this.isValid(s)) return s;
 
-    const p = s.price(this.asset);
+    const p = s.price(this.asset, this.quote);
     const q = this.side === "BUY" ? this.buyAmountOut(p) : this.qty;
 
     if (this.side === "BUY") {
       const cost = q * (p + q / 2);
       return s
-        .withPrice(this.asset, p + q)
-        .credit(this.owner, USDC, -cost)
+        .withPrice(this.asset, this.quote, p + q)
+        .credit(this.owner, this.quote, -cost)
         .credit(this.owner, this.asset, +q);
     } else {
       const proceeds = q * (p - q / 2);
       return s
-        .withPrice(this.asset, Math.max(0, p - q)) // guardrail: price >= 0
-        .credit(this.owner, USDC, +proceeds)
+        .withPrice(this.asset, this.quote, Math.max(0, p - q)) // guardrail: price >= 0
+        .credit(this.owner, this.quote, +proceeds)
         .credit(this.owner, this.asset, -q);
     }
   }
@@ -168,7 +196,7 @@ class Swap extends Transaction {
 
   // Immutable "edit": a copy of this swap with a new quantity.
   withQty(qty: number): Swap {
-    return new Swap(this.id, this.owner, this.asset, this.side, qty, this.minAmountOut, this.amountIn);
+    return new Swap(this.id, this.owner, this.asset, this.side, qty, this.minAmountOut, this.amountIn, this.quote);
   }
 }
 
@@ -197,19 +225,19 @@ abstract class PlayerTxnMeta {
 }
 
 class BUY extends PlayerTxnMeta {
-  constructor(readonly asset: Asset) { super(); }
+  constructor(readonly asset: Asset, readonly quote: Asset = USDC) { super(); }
   generate(qty: number): Transaction {
-    return new Swap(newId("p"), "PLAYER", this.asset, "BUY", qty);
+    return new Swap(newId("p"), "PLAYER", this.asset, "BUY", qty, undefined, undefined, this.quote);
   }
-  label(): string { return `Buy ${this.asset}`; }
+  label(): string { return this.quote === USDC ? `Buy ${this.asset}` : `Buy ${this.asset} w/ ${this.quote}`; }
 }
 
 class SELL extends PlayerTxnMeta {
-  constructor(readonly asset: Asset) { super(); }
+  constructor(readonly asset: Asset, readonly quote: Asset = USDC) { super(); }
   generate(qty: number): Transaction {
-    return new Swap(newId("p"), "PLAYER", this.asset, "SELL", qty);
+    return new Swap(newId("p"), "PLAYER", this.asset, "SELL", qty, undefined, undefined, this.quote);
   }
-  label(): string { return `Sell ${this.asset}`; }
+  label(): string { return this.quote === USDC ? `Sell ${this.asset}` : `Sell ${this.asset} for ${this.quote}`; }
 }
 
 // ---------------------------------------------------------------------
@@ -244,8 +272,41 @@ const LEVEL_2: Level = {
 };
 
 
+const LEVEL_3: Level = {
+  // Triangular arbitrage across three pools that all start "in sync":
+  //   DOGE/USDC = 20, XRP/USDC = 20, DOGE/XRP = 1.
+  //   No-arb condition for the triangle is  DOGE/XRP == (DOGE/USDC)/(XRP/USDC),
+  //   i.e. 1 == 20/20, so at the start there is no free loop.
+  //
+  //   The two victims push the two USDC pools by DIFFERENT amounts (Alice buys
+  //   a lot of DOGE, John buys a little XRP), so DOGE/USDC climbs far more than
+  //   XRP/USDC. That breaks the ratio: DOGE is now dear in USDC but the cross
+  //   pool still sells it for only 1 XRP — a standing triangular arb:
+  //     USDC -> XRP (cheap)  ->  DOGE (cheap via cross)  ->  USDC (dear).
+  //
+  //   So the player can BOTH sandwich each victim on its own USDC pool AND
+  //   back-run the leftover mispricing with a 3-leg arb through the cross pool.
+  pools: [
+    { asset: "DOGE", quote: USDC, price: 20 },
+    { asset: "XRP", quote: USDC, price: 20 },
+    { asset: "DOGE", quote: "XRP", price: 1 },
+  ],
+  victims: [
+    new Swap("0x1", "Alice", "DOGE", "BUY", 8, 6, 200), // big DOGE push
+    new Swap("0x2", "John", "XRP", "BUY", 4, 3, 100),   // small XRP push
+  ],
+  allowedOperations: [
+    new BUY("DOGE"), new SELL("DOGE"),
+    new BUY("XRP"), new SELL("XRP"),
+    new BUY("DOGE", "XRP"), new SELL("DOGE", "XRP"),
+  ],
+};
+
+
 function initialState(level: Level): State {
-  const pools = new Map<Asset, LP>(level.pools.map((p) => [p.asset, p]));
+  const pools = new Map<PoolId, LP>(
+    level.pools.map((p) => [poolKey(p.asset, poolQuote(p)), { ...p, quote: poolQuote(p) }])
+  );
   const balances = new Map<Owner, ReadonlyMap<Asset, number>>([
     ["PLAYER", new Map<Asset, number>([[USDC, 100000]])],
   ]);
@@ -263,8 +324,10 @@ interface BoxSim {
   readonly el: HTMLElement;
   readonly txn: Transaction;
   readonly valid: boolean;
-  readonly before: ReadonlyMap<Asset, number>;
-  readonly after: ReadonlyMap<Asset, number>;
+  // Keyed by PoolId (e.g. "DOGE/USDC"), because two pools can share a base
+  // asset (DOGE/USDC and DOGE/XRP), so the price line is per-POOL, not per-asset.
+  readonly before: ReadonlyMap<PoolId, number>;
+  readonly after: ReadonlyMap<PoolId, number>;
   // The full immutable chain snapshots bracketing this box. Invariants read
   // whatever they need off `stateBefore` locally (e.g. the player's asset
   // balance, to cap a SELL slider) — no per-rule scalars on the sim. The
@@ -276,21 +339,26 @@ interface BoxSim {
 }
 
 function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
-  assets: readonly Asset[];
+  pids: readonly PoolId[];
   sims: readonly BoxSim[];
 } {
-  const assets = level.pools.map((p) => p.asset);
+  const pids = level.pools.map((p) => poolKey(p.asset, poolQuote(p)));
+  const snap = (s: State) =>
+    new Map<PoolId, number>(level.pools.map((p) => [
+      poolKey(p.asset, poolQuote(p)),
+      s.price(p.asset, poolQuote(p)),
+    ]));
   let s = initialState(level);
   const sims: BoxSim[] = [];
   for (const { el, txn } of boxes) {
     const stateBefore = s; // immutable: safe to hand out as-is
     const valid = !(txn instanceof Swap) || txn.isValid(stateBefore);
-    const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
+    const before = snap(s);
     s = txn.simulate(s);
-    const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
+    const after = snap(s);
     sims.push({ el, txn, valid, before, after, stateBefore, stateAfter: s });
   }
-  return { assets, sims };
+  return { pids, sims };
 }
 
 // ---------------------------------------------------------------------
@@ -304,6 +372,14 @@ function newId(prefix: string): string {
 
 const txnById = new Map<string, Transaction>();
 
+// Box caption for a fixed-qty swap. Cross-pool trades name the counter asset
+// so "Buy DOGE for XRP" reads unambiguously.
+function qtyLabel(swap: Swap, qty: number): string {
+  const verb = swap.side === "BUY" ? "Buy" : "Sell";
+  const via = swap.quote === USDC ? "" : ` ${swap.side === "BUY" ? "w/" : "for"} ${swap.quote}`;
+  return `${verb} ${qty} ${swap.asset}${via}`;
+}
+
 // Build a box for a transaction. `editable` player boxes get a qty slider.
 function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } = {}): HTMLElement {
   const swap = txn as Swap;
@@ -316,8 +392,8 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
   const action = document.createElement("div");
   action.className = "action";
   action.textContent = swap.side === "BUY" && swap.amountIn !== undefined
-    ? `Buy ${swap.asset} with ${swap.amountIn} ${USDC}`
-    : `${swap.side === "BUY" ? "Buy" : "Sell"} ${swap.qty} ${swap.asset}`;
+    ? `Buy ${swap.asset} with ${swap.amountIn} ${swap.quote}`
+    : qtyLabel(swap, swap.qty);
 
   const owner = document.createElement("div");
   owner.className = "owner";
@@ -327,7 +403,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
   if (opts.victim && swap.minAmountOut !== undefined) {
     const minOut = document.createElement("div");
     minOut.className = "min-out";
-    minOut.textContent = `Min received: ${swap.minAmountOut} ${swap.side === "BUY" ? swap.asset : USDC}`;
+    minOut.textContent = `Min received: ${swap.minAmountOut} ${swap.side === "BUY" ? swap.asset : swap.quote}`;
     el.appendChild(minOut);
   }
 
@@ -347,7 +423,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
       const q = Number(slider.value);
       const cur = txnById.get(txn.id) as Swap;
       txnById.set(txn.id, cur.withQty(q)); // immutable edit
-      action.textContent = `${swap.side === "BUY" ? "Buy" : "Sell"} ${q} ${swap.asset}`;
+      action.textContent = qtyLabel(swap, q);
       drawGraph(currentLevel);
     });
     el.appendChild(slider);
@@ -393,10 +469,10 @@ const blockArea = document.getElementById("block-area") as HTMLElement;
 // window — so small moves stay readable and the scale only grows when needed.
 const Y_MIN_TOP = 50;
 
-// One stable colour per asset, assigned by its position in the level's pools.
+// One stable colour per pool, assigned by its position in the level's pools.
 const ASSET_COLORS = ["#58a6ff", "#f778ba", "#3fb950", "#d29922", "#a371f7", "#ff7b72"];
-function assetColor(assets: readonly Asset[], asset: Asset): string {
-  const i = assets.indexOf(asset);
+function poolColor(pids: readonly PoolId[], pid: PoolId): string {
+  const i = pids.indexOf(pid);
   return ASSET_COLORS[(i < 0 ? 0 : i) % ASSET_COLORS.length];
 }
 
@@ -443,7 +519,7 @@ function invariantSellInventory(sims: readonly BoxSim[]): boolean {
     if (clampedQty !== cur.qty) {
       txnById.set(s.txn.id, cur.withQty(clampedQty)); // immutable edit
       const action = s.el.querySelector<HTMLElement>(".action");
-      if (action) action.textContent = `${cur.side === "BUY" ? "Buy" : "Sell"} ${clampedQty} ${cur.asset}`;
+      if (action) action.textContent = qtyLabel(cur, clampedQty);
       changed = true;
     }
     slider.max = String(cap);
@@ -500,7 +576,7 @@ function drawGraph(level: Level, execFrac?: number): void {
   ctx.clearRect(0, 0, cssW, cssH);
 
   const boxes = readBlock();
-  const { assets, sims } = simulateBoxes(level, boxes);
+  const { pids, sims } = simulateBoxes(level, boxes);
   blockArea.classList.toggle(
     "has-txns",
     boxes.some((b) => !(b.txn instanceof Noop))
@@ -518,7 +594,7 @@ function drawGraph(level: Level, execFrac?: number): void {
   // ----- Y scale: auto-fit, but always at least the [0..50] window -----
   const allPrices: number[] = [];
   for (const s of sims)
-    for (const a of assets) allPrices.push(s.before.get(a)!, s.after.get(a)!);
+    for (const a of pids) allPrices.push(s.before.get(a)!, s.after.get(a)!);
   for (const p of level.pools) allPrices.push(p.price);
   for (const s of sims) {
     if (s.txn instanceof Swap) {
@@ -557,7 +633,7 @@ function drawGraph(level: Level, execFrac?: number): void {
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
   let playheadX = Infinity;            // Infinity => reveal everything (static)
   let activeIdx = -1;                  // box currently under the playhead
-  const playPrice = new Map<Asset, number>();
+  const playPrice = new Map<PoolId, number>();
   if (playing && sims.length) {
     const f = Math.max(0, Math.min(execFrac!, sims.length));
     const k = Math.min(Math.floor(f), sims.length - 1);
@@ -565,7 +641,7 @@ function drawGraph(level: Level, execFrac?: number): void {
     const { xL, xR } = edgesOf(sims[k].el);
     playheadX = f >= sims.length ? rightX : lerp(xL, xR, t);
     activeIdx = f >= sims.length ? -1 : k;
-    for (const a of assets)
+    for (const a of pids)
       playPrice.set(a, lerp(sims[k].before.get(a)!, sims[k].after.get(a)!, t));
   }
 
@@ -609,7 +685,7 @@ function drawGraph(level: Level, execFrac?: number): void {
     ctx.stroke();
     ctx.fillStyle = "#f0506e";
     ctx.font = "700 10px ui-sans-serif, system-ui";
-    const outAsset = s.txn.side === "BUY" ? s.txn.asset : USDC;
+    const outAsset = s.txn.side === "BUY" ? s.txn.asset : s.txn.quote;
     ctx.fillText(s.valid ? `MIN ${s.txn.minAmountOut} ${outAsset}` : "REVERTS", xL + 5, y - 5);
   }
 
@@ -620,12 +696,12 @@ function drawGraph(level: Level, execFrac?: number): void {
   // the flat gaps between boxes fall out for free. We draw the whole line
   // dimmed, then RE-draw it clipped to [0 .. playheadX] at full strength: that
   // clip is the wipe. Player boxes get a bold, glowing overlay on top.
-  const pointsOf = (asset: Asset): [number, number][] => {
+  const pointsOf = (pid: PoolId): [number, number][] => {
     const pts: [number, number][] = [];
     for (const s of sims) {
       const { xL, xR } = edgesOf(s.el);
-      pts.push([xL, yOf(s.before.get(asset)!)]);
-      pts.push([xR, yOf(s.after.get(asset)!)]);
+      pts.push([xL, yOf(s.before.get(pid)!)]);
+      pts.push([xR, yOf(s.after.get(pid)!)]);
     }
     return pts;
   };
@@ -646,9 +722,9 @@ function drawGraph(level: Level, execFrac?: number): void {
     ctx.fill();
   };
 
-  for (const asset of assets) {
-    const color = assetColor(assets, asset);
-    const pts = pointsOf(asset);
+  for (const pid of pids) {
+    const color = poolColor(pids, pid);
+    const pts = pointsOf(pid);
 
     // 1) full line, dimmed while playing (the "future"); solid when static.
     ctx.globalAlpha = playing ? 0.16 : 1;
@@ -675,8 +751,8 @@ function drawGraph(level: Level, execFrac?: number): void {
     ctx.restore();
 
     // 3) the live price dot riding the playhead.
-    if (playing && playPrice.has(asset) && playheadX !== Infinity) {
-      const y = yOf(playPrice.get(asset)!);
+    if (playing && playPrice.has(pid) && playheadX !== Infinity) {
+      const y = yOf(playPrice.get(pid)!);
       ctx.fillStyle = color;
       ctx.shadowColor = color;
       ctx.shadowBlur = 12;
@@ -691,7 +767,7 @@ function drawGraph(level: Level, execFrac?: number): void {
       ctx.fillStyle = color;
       ctx.font = "600 11px ui-sans-serif, system-ui";
       ctx.textAlign = "right";
-      ctx.fillText(asset, xR - 2, yOf(last.after.get(asset)!) - 5);
+      ctx.fillText(pid, xR - 2, yOf(last.after.get(pid)!) - 5);
       ctx.textAlign = "left";
     }
   }
@@ -777,7 +853,7 @@ function spacerEl(kind: "lead" | "trail"): HTMLElement {
 function renderInventory(level: Level, state: State): void {
   const inv = document.getElementById("inventory") as HTMLElement;
   inv.innerHTML = "";
-  const assets: Asset[] = [USDC, ...level.pools.map((p) => p.asset)];
+  const assets: Asset[] = assetsOf(level);
   for (const asset of assets) {
     const amount = state.balance("PLAYER", asset);
     const row = document.createElement("div");
@@ -907,7 +983,7 @@ const SPACER_MS = 240;
 interface CurrentExecution {
   readonly level: Level;
   readonly mode: "simulate" | "submit";
-  readonly assets: readonly Asset[];
+  readonly pids: readonly PoolId[];
   readonly sims: readonly BoxSim[];
   readonly starts: readonly number[]; // cumulative ms at which each box begins
   readonly total: number;             // total run duration (ms)
@@ -957,7 +1033,7 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
   stopExecution();                 // restart cleanly if one was already playing
   hideResult();
   validate(level);                 // never play a stale/illegal block
-  const { assets, sims } = simulateBoxes(level, readBlock());
+  const { pids, sims } = simulateBoxes(level, readBlock());
   if (!sims.length) return;
 
   // Build the timing schedule: cumulative start-time of each box.
@@ -969,7 +1045,7 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
   }
 
   const exec: CurrentExecution = {
-    level, mode, assets, sims, starts, total: acc,
+    level, mode, pids, sims, starts, total: acc,
     startMs: performance.now(), raf: 0, frac: 0,
     state: sims[0].stateBefore, elapsedMs: 0, done: false,
   };
@@ -1035,8 +1111,9 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   const transactions = sims.filter((sim) => sim.txn.owner === "PLAYER" && !(sim.txn instanceof Noop));
   const settlement = calculateSettlement(endUSDC - startUSDC, transactions.length);
   const victimLoss = Math.max(0, settlement.grossGains);
-  const exposed = level.pools
-    .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
+  const exposed = assetsOf(level)
+    .filter((asset) => asset !== USDC)
+    .map((asset) => ({ asset, amt: finalState.balance("PLAYER", asset) }))
     .filter((x) => Math.abs(x.amt) > 1e-9);
   const hash = `0x9984954${Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, "0")}`;
   const cls = settlement.botProfit > 0 ? "win" : settlement.botProfit < 0 ? "loss" : "flat";
@@ -1072,7 +1149,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
 }
 
 function main(): void {
-  currentLevel = LEVEL_1;
+  currentLevel = LEVEL_3;
   buildPalette(currentLevel);
   buildInventory(currentLevel);
   buildBlock();
