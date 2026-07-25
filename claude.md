@@ -79,8 +79,8 @@ Bottom-right buttons: Simulate, and Submit. Simulate tests the block, without sa
 
 
 ## TECH-STACK:
-Use basic JS + HTML. 
-Two files: 1 html file, 1 js file. Keep it super minimal and simple for now.
+Use basic TS + HTML. 
+Two files: 1 html file, 1 js (typescript) file. Keep it super minimal and simple for now.
 Use sortable.js for box rendering.
 
 ## ARCHITECTURE:
