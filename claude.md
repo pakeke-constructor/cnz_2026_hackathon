@@ -117,15 +117,8 @@ class State {
     // this essentially contains the entire blockchain state.
     // (This object is immutable! Returns copies of itself.)
 
-    currentTxn = 0 // the current txn that's executing.
     balances: Map<Owner, Map<Asset, number>>
     pools: List<LP>
-
-    step(): State {
-        // this function returns a clone of itself with updated values.
-        // think of it as "stepping forward 1 transaction" in the block.
-        return new State(...)
-    }
 }
 
 type Mempool = List<VictimTransaction>
@@ -133,12 +126,17 @@ type Block = List<Transaction>
 
 
 class Transaction {
-    simulate(s: State): State {}
+    simulate(s: State): State {
+        // this function returns a clone of itself with updated values.
+        // think of it as "stepping forward 1 transaction" in the block.
+        return new State(...)
+    }
 }
 
-class VictimSwap extends Transaction {
+class Swap extends Transaction {
     assetIn: string
     assetOut: string
+    amountIn: number
     amountOutMin: number
 }
 
