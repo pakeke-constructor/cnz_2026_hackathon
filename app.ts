@@ -325,13 +325,24 @@ function drawGraph(level: Level): void {
     padT + plotH * (1 - (price - Y_LO) / (Y_HI - Y_LO));
 
   // ----- X positions: measured from the real boxes below -----
+  // Two immovable spacer boxes pad the block (see index.html). The price line
+  // rides FLAT across the lead spacer (start price) and the trail spacer
+  // (final price); the real transaction boxes sit in between. All positions
+  // come from live layout, so nothing is hardcoded.
   const wrapRect = graphWrap.getBoundingClientRect();
-  const boxes = Array.from(blockArea.children) as HTMLElement[];
-  const xOfIndex = (i: number): number => {
-    if (i < 0 || boxes.length === 0) return padL; // -1 = pre-block price
-    const r = boxes[i].getBoundingClientRect();
+  const centerX = (el: HTMLElement): number => {
+    const r = el.getBoundingClientRect();
     return r.left + r.width / 2 - wrapRect.left;
   };
+  const realBoxes = (Array.from(blockArea.children) as HTMLElement[]).filter(
+    (el) => el.dataset.id && txnById.has(el.dataset.id)
+  );
+  const leadEl = blockArea.querySelector('[data-spacer="lead"]') as HTMLElement | null;
+  const trailEl = blockArea.querySelector('[data-spacer="trail"]') as HTMLElement | null;
+  const leadX = leadEl ? centerX(leadEl) : padL;
+  const trailX = trailEl ? centerX(trailEl) : rightX;
+
+  blockArea.classList.toggle("has-txns", realBoxes.length > 0);
 
   // ----- gridlines + Y labels -----
   ctx.strokeStyle = "#2a3242";
@@ -351,8 +362,8 @@ function drawGraph(level: Level): void {
 
   // ----- vertical guide under each transaction box -----
   ctx.strokeStyle = "rgba(88,166,255,0.15)";
-  for (let i = 0; i < boxes.length; i++) {
-    const x = xOfIndex(i);
+  for (const el of realBoxes) {
+    const x = centerX(el);
     ctx.beginPath();
     ctx.moveTo(x, padT);
     ctx.lineTo(x, cssH - padB);
@@ -360,9 +371,9 @@ function drawGraph(level: Level): void {
   }
 
   // ----- one line per asset -----
-  // The line starts at the pre-block price (left edge), steps once per
-  // transaction, then holds the LAST SEEN price flat out to the right edge.
-  // With no transactions this is just a flat line at the current price.
+  // Flat across the lead spacer at the start price, step once per transaction,
+  // then flat across the trail spacer at the LAST SEEN price out to the right
+  // edge. With no transactions it's a single flat line at the current price.
   const drawDot = (x: number, y: number) => {
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, Math.PI * 2);
@@ -373,22 +384,25 @@ function drawGraph(level: Level): void {
     const color = assetColor(assets, asset);
     const startPrice = start.get(asset)!;
     const pts = series.get(asset)!;
-    const lastPrice = pts.length ? pts[pts.length - 1] : startPrice;
+    const n = Math.min(pts.length, realBoxes.length);
+    const lastPrice = n ? pts[n - 1] : startPrice;
 
     // line
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(xOfIndex(-1), yOf(startPrice));
-    for (let i = 0; i < pts.length; i++) ctx.lineTo(xOfIndex(i), yOf(pts[i]));
-    // hold flat to the right edge at the last seen price
-    ctx.lineTo(rightX, yOf(lastPrice));
+    ctx.moveTo(padL, yOf(startPrice));      // flat lead-in from the plot edge
+    ctx.lineTo(leadX, yOf(startPrice));     // ...across the lead spacer
+    for (let i = 0; i < n; i++) ctx.lineTo(centerX(realBoxes[i]), yOf(pts[i]));
+    ctx.lineTo(trailX, yOf(lastPrice));     // flat across the trail spacer
+    ctx.lineTo(rightX, yOf(lastPrice));     // ...out to the right edge
     ctx.stroke();
 
-    // dots at each resulting price
+    // dots: start price, each resulting price, final price
     ctx.fillStyle = color;
-    drawDot(xOfIndex(-1), yOf(startPrice));
-    for (let i = 0; i < pts.length; i++) drawDot(xOfIndex(i), yOf(pts[i]));
+    drawDot(leadX, yOf(startPrice));
+    for (let i = 0; i < n; i++) drawDot(centerX(realBoxes[i]), yOf(pts[i]));
+    drawDot(trailX, yOf(lastPrice));
 
     // asset label riding the flat tail on the right
     ctx.fillStyle = color;
@@ -427,6 +441,23 @@ function buildPalette(level: Level): void {
   });
 }
 
+// The block always contains two immovable spacer boxes pinned to its ends
+// (via flex `order` in CSS). They give the price line a flat lead-in / run-out
+// to ride across, marking where the price starts and ends. They are not `.txn`
+// elements, so Sortable's `draggable: ".txn"` leaves them untouched.
+function spacerEl(kind: "lead" | "trail"): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "spacer";
+  el.dataset.spacer = kind;
+  el.textContent = kind === "lead" ? "start" : "end";
+  return el;
+}
+
+function buildBlock(): void {
+  blockArea.innerHTML = "";
+  blockArea.append(spacerEl("lead"), spacerEl("trail"));
+}
+
 function buildMempool(level: Level): void {
   const mempool = document.getElementById("mempool") as HTMLElement;
   mempool.innerHTML = "";
@@ -446,6 +477,7 @@ function setupDragging(level: Level): void {
     group: { name: "txns", pull: true, put: true },
     animation: 150,
     forceFallback: true,
+    draggable: ".txn",         // spacers aren't `.txn`, so they never move
     filter: "input",           // let the qty slider work without starting a drag
     preventOnFilter: false,
     onSort: onChange,
@@ -483,6 +515,7 @@ function setupDragging(level: Level): void {
 function main(): void {
   currentLevel = LEVEL_1;
   buildPalette(currentLevel);
+  buildBlock();
   buildMempool(currentLevel);
   setupDragging(currentLevel);
   drawGraph(currentLevel);

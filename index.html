@@ -75,13 +75,37 @@
       overflow-x: auto;
       min-height: 0;
     }
-    #block-area:empty::after {
+    #block-area:not(.has-txns)::after {
       content: "Drag transactions here to build the block  →  left-to-right = execution order";
       color: var(--muted);
       align-self: center;
       margin: auto;
       font-size: 13px;
     }
+
+    /* Immovable spacer "boxes" that pad the block. They aren't transactions —
+       they just give the price line a flat start (lead) and end (trail) region
+       to ride across, so where the price starts and ends reads clearly.
+       Pinned to the ends with flex `order`, so dragging never displaces them. */
+    .spacer {
+      flex: 0 0 46px;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      border: 1px dashed var(--line);
+      background: rgba(255,255,255,.02);
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      opacity: .7;
+      cursor: default;
+      user-select: none;
+    }
+    .spacer[data-spacer="lead"]  { order: -1; }
+    .spacer[data-spacer="trail"] { order: 1; }
 
     /* Mempool (unordered victim transactions) */
     #mempool-panel { background: var(--panel); border-bottom: none; }
