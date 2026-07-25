@@ -263,17 +263,13 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
 
   const action = document.createElement("div");
   action.className = "action";
-  action.textContent = txn.label();
-
-  const amt = document.createElement("div");
-  amt.className = "amt";
-  amt.textContent = `${swap.qty} ${swap.asset}`;
+  action.textContent = `${swap.side === "BUY" ? "Buy" : "Sell"} ${swap.qty} ${swap.asset}`;
 
   const owner = document.createElement("div");
   owner.className = "owner";
   owner.textContent = opts.victim ? txn.owner : "MEV \u{1F608}";
 
-  el.append(owner, action, amt);
+  el.append(owner, action);
 
   if (opts.editable) {
     const slider = document.createElement("input");
@@ -291,7 +287,7 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
       const q = Number(slider.value);
       const cur = txnById.get(txn.id) as Swap;
       txnById.set(txn.id, cur.withQty(q)); // immutable edit
-      amt.textContent = `${q} ${swap.asset}`;
+      action.textContent = `${swap.side === "BUY" ? "Buy" : "Sell"} ${q} ${swap.asset}`;
       drawGraph(currentLevel);
     });
     el.appendChild(slider);
@@ -386,8 +382,8 @@ function invariantSellInventory(sims: readonly BoxSim[]): boolean {
     const clampedQty = Math.min(cur.qty, cap);
     if (clampedQty !== cur.qty) {
       txnById.set(s.txn.id, cur.withQty(clampedQty)); // immutable edit
-      const amt = s.el.querySelector<HTMLElement>(".amt");
-      if (amt) amt.textContent = `${clampedQty} ${cur.asset}`;
+      const action = s.el.querySelector<HTMLElement>(".action");
+      if (action) action.textContent = `${cur.side === "BUY" ? "Buy" : "Sell"} ${clampedQty} ${cur.asset}`;
       changed = true;
     }
     slider.max = String(cap);

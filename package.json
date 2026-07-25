@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "serve": "node serve.js",
+    "start": "tsc && node serve.js"
   },
   "devDependencies": {
     "typescript": "^5.5.4"
