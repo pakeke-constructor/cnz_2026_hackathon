@@ -215,10 +215,14 @@ interface BoxSim {
   readonly txn: Transaction;
   readonly before: ReadonlyMap<Asset, number>;
   readonly after: ReadonlyMap<Asset, number>;
-  // The full immutable chain snapshot as it was JUST BEFORE this box ran.
-  // Invariants read whatever they need off this locally (e.g. the player's
-  // asset balance, to cap a SELL slider) — no per-rule scalars on the sim.
+  // The full immutable chain snapshots bracketing this box. Invariants read
+  // whatever they need off `stateBefore` locally (e.g. the player's asset
+  // balance, to cap a SELL slider) — no per-rule scalars on the sim. The
+  // playback engine reads `stateBefore`/`stateAfter` to show live balances as
+  // the playhead crosses each box. `stateBefore` of box k == `stateAfter` of
+  // box k-1, by construction.
   readonly stateBefore: State;
+  readonly stateAfter: State;
 }
 
 function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
@@ -233,7 +237,7 @@ function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
     const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
     s = txn.simulate(s);
     const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-    sims.push({ el, txn, before, after, stateBefore });
+    sims.push({ el, txn, before, after, stateBefore, stateAfter: s });
   }
   return { assets, sims };
 }
@@ -404,10 +408,28 @@ function validate(level: Level): void {
   }
 }
 
-function drawGraph(level: Level): void {
+// Draw the price graph.
+//
+//   execFrac === undefined  → static, fully-revealed graph (between edits).
+//   execFrac is a number    → an animation frame during playback. It is a
+//                             FRACTIONAL box index in [0 .. sims.length]: e.g.
+//                             2.6 means "the playhead is 60% of the way across
+//                             box #2". Everything left of the playhead is drawn
+//                             solid (already executed); everything to its right
+//                             is dimmed (the future), and a glowing vertical
+//                             playhead sweeps across — the "wipe".
+function drawGraph(level: Level, execFrac?: number): void {
+  const playing = execFrac !== undefined;
+
   // Correct the block to a fixpoint BEFORE we render, so what's drawn always
-  // reflects legal quantities (sliders clamped to inventory, etc.).
-  validate(level);
+  // reflects legal quantities (sliders clamped to inventory, etc.). While a
+  // playback is running the block is frozen, so skip the (idempotent) pass.
+  if (!playing) validate(level);
+
+  // Static redraws happen on every edit — reset the inventory panel to the
+  // level's starting balances. During playback the engine drives the panel with
+  // live balances instead, so leave it alone here.
+  if (!playing) buildInventory(level);
 
   const ctx = graph.getContext("2d")!;
   const dpr = window.devicePixelRatio || 1;
@@ -464,17 +486,61 @@ function drawGraph(level: Level): void {
     ctx.fillText(price.toFixed(0), 6, y + 4);
   }
 
+  // ----- playhead geometry -----
+  // Turn the fractional box index into an on-screen x, plus the interpolated
+  // price of each asset at that instant. Left of `playheadX` is "executed".
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  let playheadX = Infinity;            // Infinity => reveal everything (static)
+  let activeIdx = -1;                  // box currently under the playhead
+  const playPrice = new Map<Asset, number>();
+  if (playing && sims.length) {
+    const f = Math.max(0, Math.min(execFrac!, sims.length));
+    const k = Math.min(Math.floor(f), sims.length - 1);
+    const t = Math.min(1, f - k);
+    const { xL, xR } = edgesOf(sims[k].el);
+    playheadX = f >= sims.length ? rightX : lerp(xL, xR, t);
+    activeIdx = f >= sims.length ? -1 : k;
+    for (const a of assets)
+      playPrice.set(a, lerp(sims[k].before.get(a)!, sims[k].after.get(a)!, t));
+  }
+
   // ----- faint column behind each price-changing (non-spacer) box -----
-  ctx.fillStyle = "rgba(88,166,255,0.06)";
-  for (const s of sims) {
+  // The box currently executing gets a brighter, warmer wash so the eye is
+  // pulled to exactly where the action is happening right now.
+  for (let i = 0; i < sims.length; i++) {
+    const s = sims[i];
     if (s.txn instanceof Noop) continue;
     const { xL, xR } = edgesOf(s.el);
+    ctx.fillStyle = i === activeIdx ? "rgba(88,166,255,0.16)" : "rgba(88,166,255,0.06)";
     ctx.fillRect(xL, padT, xR - xL, plotH);
   }
 
   // ----- one line per asset -----
-  // Walk the boxes in order. For each box draw before->after across its width;
-  // the flat gaps between boxes connect automatically (before == prev after).
+  // Build each asset's polyline as a flat list of points — two per box:
+  // (xL, before) then (xR, after). Consecutive boxes connect automatically, so
+  // the flat gaps between boxes fall out for free. We draw the whole line
+  // dimmed, then RE-draw it clipped to [0 .. playheadX] at full strength: that
+  // clip is the wipe. Player boxes get a bold, glowing overlay on top.
+  const pointsOf = (asset: Asset): [number, number][] => {
+    const pts: [number, number][] = [];
+    for (const s of sims) {
+      const { xL, xR } = edgesOf(s.el);
+      pts.push([xL, yOf(s.before.get(asset)!)]);
+      pts.push([xR, yOf(s.after.get(asset)!)]);
+    }
+    return pts;
+  };
+  const strokePoly = (pts: [number, number][], color: string, width: number, glow: boolean) => {
+    if (pts.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineJoin = "round";
+    if (glow) { ctx.shadowColor = color; ctx.shadowBlur = 8; }
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  };
   const drawDot = (x: number, y: number) => {
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, Math.PI * 2);
@@ -483,56 +549,43 @@ function drawGraph(level: Level): void {
 
   for (const asset of assets) {
     const color = assetColor(assets, asset);
+    const pts = pointsOf(asset);
 
-    // Draw box-by-box rather than as one path, so a box that is one of the
-    // PLAYER's own transactions can be rendered bold + glowing — making it
-    // obvious on the graph exactly where YOUR trades move the price.
-    let prevX = 0, prevY = 0;
+    // 1) full line, dimmed while playing (the "future"); solid when static.
+    ctx.globalAlpha = playing ? 0.16 : 1;
+    strokePoly(pts, color, 2, false);
+    ctx.globalAlpha = 1;
+
+    // 2) revealed portion: same line, clipped to everything left of the wipe.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, playheadX === Infinity ? cssW : playheadX, cssH);
+    ctx.clip();
+    strokePoly(pts, color, 2, false);
+    // player trades bold + glowing, so it's obvious where YOU moved the price.
     sims.forEach((s, i) => {
-      const { xL, xR } = edgesOf(s.el);
-      const yB = yOf(s.before.get(asset)!);
-      const yA = yOf(s.after.get(asset)!);
-
-      // Flat connector across the gap from the previous box (always normal).
-      if (i > 0) {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(prevX, prevY);
-        ctx.lineTo(xL, yB);
-        ctx.stroke();
-      }
-
-      // The box's own segment: bold + glow when it's the player's trade.
-      const mine = s.txn.owner === "PLAYER";
-      ctx.strokeStyle = color;
-      ctx.lineWidth = mine ? 4 : 2;
-      if (mine) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 8;
-      }
-      ctx.beginPath();
-      ctx.moveTo(xL, yB);
-      ctx.lineTo(xR, yA);
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-
-      prevX = xR;
-      prevY = yA;
+      if (s.txn.owner !== "PLAYER") return;
+      strokePoly([pts[2 * i], pts[2 * i + 1]], color, 4, true);
     });
-
-    // dots at every box boundary (start of first box, then each box's end)
+    // boundary dots on the revealed side only.
     ctx.fillStyle = color;
     if (sims.length) {
-      const first = edgesOf(sims[0].el);
-      drawDot(first.xL, yOf(sims[0].before.get(asset)!));
-      for (const s of sims) {
-        const { xR } = edgesOf(s.el);
-        drawDot(xR, yOf(s.after.get(asset)!));
-      }
+      drawDot(pts[0][0], pts[0][1]);
+      for (let i = 0; i < sims.length; i++) drawDot(pts[2 * i + 1][0], pts[2 * i + 1][1]);
+    }
+    ctx.restore();
+
+    // 3) the live price dot riding the playhead.
+    if (playing && playPrice.has(asset) && playheadX !== Infinity) {
+      const y = yOf(playPrice.get(asset)!);
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
+      drawDot(playheadX, y);
+      ctx.shadowBlur = 0;
     }
 
-    // asset label riding the final flat (end-spacer) segment
+    // asset label riding the final flat (end-spacer) segment.
     if (sims.length) {
       const last = sims[sims.length - 1];
       const { xR } = edgesOf(last.el);
@@ -542,6 +595,35 @@ function drawGraph(level: Level): void {
       ctx.fillText(asset, xR - 2, yOf(last.after.get(asset)!) - 5);
       ctx.textAlign = "left";
     }
+  }
+
+  // ----- the playhead itself: a glowing vertical sweep line + top marker -----
+  if (playing && playheadX !== Infinity) {
+    ctx.save();
+    const grad = ctx.createLinearGradient(playheadX - 6, 0, playheadX + 6, 0);
+    grad.addColorStop(0, "rgba(88,166,255,0)");
+    grad.addColorStop(0.5, "rgba(88,166,255,0.55)");
+    grad.addColorStop(1, "rgba(88,166,255,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(playheadX - 6, padT, 12, plotH); // soft glow band
+    ctx.strokeStyle = "rgba(160,205,255,0.95)";
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = "rgba(88,166,255,0.9)";
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(playheadX, padT);
+    ctx.lineTo(playheadX, padT + plotH);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // little triangle marker at the top of the sweep line
+    ctx.fillStyle = "rgba(160,205,255,0.95)";
+    ctx.beginPath();
+    ctx.moveTo(playheadX - 5, padT);
+    ctx.lineTo(playheadX + 5, padT);
+    ctx.lineTo(playheadX, padT + 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -588,25 +670,35 @@ function spacerEl(kind: "lead" | "trail"): HTMLElement {
   return el;
 }
 
-// Show the player's STARTING inventory at the bottom of the sidebar. Read
-// straight from the level's initial state so it can never drift from what the
-// player actually begins the block with.
-function buildInventory(level: Level): void {
+// Render the player's inventory panel from an immutable State. Used both for
+// the STARTING inventory (static, between edits) and for LIVE balances that
+// tick as the execution playhead crosses each box. We always render USDC first
+// and then every pool asset — even at zero — so rows don't pop in and out and
+// jump around as balances cross zero during playback.
+function renderInventory(level: Level, state: State): void {
   const inv = document.getElementById("inventory") as HTMLElement;
   inv.innerHTML = "";
-  const player = initialState(level).balances.get("PLAYER") ?? new Map<Asset, number>();
-  for (const [asset, amount] of player) {
+  const assets: Asset[] = [USDC, ...level.pools.map((p) => p.asset)];
+  for (const asset of assets) {
+    const amount = state.balance("PLAYER", asset);
     const row = document.createElement("div");
     row.className = "inv-row";
+    if (asset !== USDC && Math.abs(amount) > 1e-9) row.classList.add("exposed"); // holding a risky asset
     const a = document.createElement("span");
     a.className = "inv-asset";
     a.textContent = asset;
     const v = document.createElement("span");
     v.className = "inv-amt";
-    v.textContent = amount.toLocaleString();
+    // round to whole units; USDC can show a sign so extraction reads clearly.
+    v.textContent = Math.round(amount).toLocaleString();
     row.append(a, v);
     inv.appendChild(row);
   }
+}
+
+// Reset the inventory panel to the level's starting balances.
+function buildInventory(level: Level): void {
+  renderInventory(level, initialState(level));
 }
 
 function buildBlock(): void {
@@ -694,14 +786,158 @@ function setupDragging(level: Level): void {
   });
 }
 
-// Submit the block. Runs one more explicit validation pass first — the block
-// is already validated every frame, but re-validating here means submission can
-// never act on stale/illegal quantities regardless of how it was triggered.
-// (No submit button is wired up yet; this is the hook the UI will call.)
-function submit(level: Level): void {
-  validate(level);
-  drawGraph(level);
-  // TODO: walk the block, tally profit/bribes, and reveal the result.
+// ---------------------------------------------------------------------
+// Execution engine — step through the block box-by-box in real time.
+//
+// A run first freezes the block and computes the WHOLE simulation up front
+// (the outcome is deterministic; only its *reveal* is animated). Then a single
+// requestAnimationFrame loop advances a wall-clock playhead across the boxes:
+// each frame we map elapsed-ms -> a fractional box index and hand it to
+// drawGraph, which wipes the price line in from the left. As the playhead
+// crosses each box boundary we tick the inventory panel to that box's state.
+//
+// `currentExecution` is the single source of truth for "are we playing, and
+// where". It holds the frozen sim, the timing schedule, and the live cursor.
+// ---------------------------------------------------------------------
+
+// Per-box wipe durations (ms). Real transactions get a beat to be read; the
+// flat start/end spacers zip by so the run doesn't feel padded.
+const BOX_MS = 560;
+const SPACER_MS = 240;
+
+interface CurrentExecution {
+  readonly level: Level;
+  readonly mode: "simulate" | "submit";
+  readonly assets: readonly Asset[];
+  readonly sims: readonly BoxSim[];
+  readonly starts: readonly number[]; // cumulative ms at which each box begins
+  readonly total: number;             // total run duration (ms)
+  readonly startMs: number;           // performance.now() when playback began
+  raf: number;                        // active rAF handle (for cancellation)
+  frac: number;                       // live cursor: fractional box index
+  done: boolean;
+}
+
+let currentExecution: CurrentExecution | null = null;
+
+// Map elapsed playback ms -> fractional box index, honouring each box's own
+// duration (so spacers advance faster than trades).
+function fracAtMs(exec: CurrentExecution, ms: number): number {
+  if (ms >= exec.total) return exec.sims.length;
+  for (let i = exec.sims.length - 1; i >= 0; i--) {
+    if (ms >= exec.starts[i]) {
+      const dur = (i + 1 < exec.starts.length ? exec.starts[i + 1] : exec.total) - exec.starts[i];
+      return i + (dur > 0 ? (ms - exec.starts[i]) / dur : 0);
+    }
+  }
+  return 0;
+}
+
+// Balances to show at cursor `frac`: the state entering the box under the
+// playhead (== the state after the previous box), so the panel ticks the
+// instant execution moves on to the next box. Once finished, the final state.
+function stateAtFrac(exec: CurrentExecution, frac: number): State {
+  if (!exec.sims.length) return initialState(exec.level);
+  if (frac >= exec.sims.length) return exec.sims[exec.sims.length - 1].stateAfter;
+  return exec.sims[Math.min(Math.floor(frac), exec.sims.length - 1)].stateBefore;
+}
+
+function stopExecution(): void {
+  if (!currentExecution) return;
+  cancelAnimationFrame(currentExecution.raf);
+  currentExecution = null;
+  document.body.classList.remove("playing");
+}
+
+// Kick off a run. `mode` only differs at the finish line: "submit" reveals the
+// profit/exposure summary; "simulate" just settles back to the interactive
+// graph so you can keep tweaking.
+function runExecution(level: Level, mode: "simulate" | "submit"): void {
+  stopExecution();                 // restart cleanly if one was already playing
+  hideResult();
+  validate(level);                 // never play a stale/illegal block
+  const { assets, sims } = simulateBoxes(level, readBlock());
+  if (!sims.length) return;
+
+  // Build the timing schedule: cumulative start-time of each box.
+  const starts: number[] = [];
+  let acc = 0;
+  for (const s of sims) {
+    starts.push(acc);
+    acc += s.txn instanceof Noop ? SPACER_MS : BOX_MS;
+  }
+
+  const exec: CurrentExecution = {
+    level, mode, assets, sims, starts, total: acc,
+    startMs: performance.now(), raf: 0, frac: 0, done: false,
+  };
+  currentExecution = exec;
+  document.body.classList.add("playing"); // freeze interaction while it plays
+
+  const tick = () => {
+    if (currentExecution !== exec) return; // superseded by a newer run
+    const ms = performance.now() - exec.startMs;
+    exec.frac = fracAtMs(exec, ms);
+    drawGraph(level, exec.frac);
+    renderInventory(level, stateAtFrac(exec, exec.frac));
+
+    if (ms < exec.total) {
+      exec.raf = requestAnimationFrame(tick);
+      return;
+    }
+    // ----- finished: rest on the fully-revealed final frame -----
+    exec.done = true;
+    drawGraph(level, exec.sims.length);
+    renderInventory(level, exec.sims[exec.sims.length - 1].stateAfter);
+    currentExecution = null;
+    document.body.classList.remove("playing");
+    if (mode === "submit") showResult(level, exec.sims[exec.sims.length - 1].stateAfter);
+  };
+  exec.raf = requestAnimationFrame(tick);
+}
+
+// ---------------------------------------------------------------------
+// Result summary (shown after a Submit run completes).
+// ---------------------------------------------------------------------
+function hideResult(): void {
+  const box = document.getElementById("result");
+  if (box) box.classList.add("hidden");
+}
+
+function showResult(level: Level, finalState: State): void {
+  const startUSDC = initialState(level).balance("PLAYER", USDC);
+  const endUSDC = finalState.balance("PLAYER", USDC);
+  const profit = Math.round(endUSDC - startUSDC);
+
+  // Any non-USDC asset still on the books = unhedged price exposure next block.
+  const exposed = level.pools
+    .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
+    .filter((x) => Math.abs(x.amt) > 1e-9);
+
+  const box = document.getElementById("result") as HTMLElement;
+  const sign = profit > 0 ? "+" : profit < 0 ? "−" : "";
+  const cls = profit > 0 ? "win" : profit < 0 ? "loss" : "flat";
+  const verb = profit > 0 ? "You extracted" : profit < 0 ? "You lost" : "You netted";
+
+  let warn = "";
+  if (exposed.length) {
+    const list = exposed
+      .map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`)
+      .join(", ");
+    warn = `<div class="result-warn">⚠️ You're still holding ${list}. That's
+      unhedged exposure to next block's price — sell back to USDC to lock it in.</div>`;
+  }
+
+  box.className = `result-${cls}`; // (also clears the "hidden" class)
+  box.innerHTML = `
+    <div class="result-title">${verb}</div>
+    <div class="result-profit">${sign}$${Math.abs(profit).toLocaleString()}</div>
+    ${warn}
+    <button id="result-close">Keep going</button>`;
+  (document.getElementById("result-close") as HTMLElement).onclick = () => {
+    hideResult();
+    drawGraph(level); // back to the interactive, fully-revealed graph
+  };
 }
 
 function main(): void {
@@ -712,7 +948,15 @@ function main(): void {
   buildMempool(currentLevel);
   setupDragging(currentLevel);
   drawGraph(currentLevel);
-  window.addEventListener("resize", () => drawGraph(currentLevel));
+  window.addEventListener("resize", () => {
+    // Mid-playback the rAF loop repaints anyway; only redraw here when idle.
+    if (!currentExecution) drawGraph(currentLevel);
+  });
+
+  (document.getElementById("btn-simulate") as HTMLElement).onclick = () =>
+    runExecution(currentLevel, "simulate");
+  (document.getElementById("btn-submit") as HTMLElement).onclick = () =>
+    runExecution(currentLevel, "submit");
 }
 
 main();

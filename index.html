@@ -299,6 +299,109 @@
       box-shadow: 0 10px 24px -8px rgba(0,0,0,.7), 0 0 0 1px var(--accent) inset;
     }
     .sortable-drag { cursor: grabbing; }
+
+    /* ---------- Execution controls (bottom-right) ---------- */
+    #controls {
+      position: absolute;
+      right: 18px;
+      bottom: 16px;
+      display: flex;
+      gap: 10px;
+      z-index: 5;
+    }
+    #controls button {
+      font: inherit;
+      font-weight: 700;
+      letter-spacing: .02em;
+      color: var(--text);
+      padding: 11px 18px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      cursor: pointer;
+      box-shadow: 0 6px 18px -8px rgba(0,0,0,.7);
+      transition: transform .1s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease;
+    }
+    #controls button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.28); }
+    #controls button:active { transform: translateY(0); }
+    #btn-submit {
+      background: linear-gradient(180deg, #2ea043, #24803584);
+      border-color: rgba(46,160,67,.6);
+      box-shadow: 0 6px 20px -8px rgba(46,160,67,.8);
+    }
+    #btn-submit:hover { border-color: var(--buy); }
+    /* While a run plays, dim the controls and lock the interactive zones so a
+       stray drag/slider can't shift the geometry the playhead is tracking. */
+    body.playing #controls button { opacity: .5; pointer-events: none; }
+    body.playing #block-area,
+    body.playing #mempool,
+    body.playing #palette { pointer-events: none; }
+
+    /* live-exposure highlight on inventory rows holding a risky (non-USDC) asset */
+    .inv-row.exposed {
+      border-color: rgba(255,140,26,.45);
+      background: rgba(255,140,26,.10);
+    }
+    .inv-row.exposed .inv-amt { color: #ffc27a; }
+
+    /* ---------- Result summary (after Submit) ---------- */
+    #result {
+      position: absolute;
+      left: 50%;
+      top: 34%;
+      transform: translate(-50%, -50%);
+      min-width: 300px;
+      max-width: 440px;
+      padding: 26px 30px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(22,27,34,.97);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 30px 80px -20px rgba(0,0,0,.9);
+      text-align: center;
+      z-index: 10;
+      animation: result-pop .28s cubic-bezier(.2,.8,.2,1.2);
+    }
+    #result.hidden { display: none; }
+    @keyframes result-pop {
+      from { opacity: 0; transform: translate(-50%, -46%) scale(.94); }
+      to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
+    .result-win   { border-color: rgba(46,160,67,.55); }
+    .result-loss  { border-color: rgba(240,80,110,.55); }
+    .result-title { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+    .result-profit {
+      font-size: 44px;
+      font-weight: 800;
+      margin: 6px 0 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    .result-win  .result-profit { color: var(--buy); }
+    .result-loss .result-profit { color: var(--sell); }
+    .result-flat .result-profit { color: var(--text); }
+    .result-warn {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,140,26,.30);
+      background: rgba(255,140,26,.10);
+      color: #ffc27a;
+      font-size: 12px;
+      line-height: 1.5;
+      text-align: left;
+    }
+    #result button {
+      margin-top: 18px;
+      font: inherit;
+      font-weight: 700;
+      color: var(--text);
+      padding: 9px 20px;
+      border-radius: 9px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      cursor: pointer;
+    }
+    #result button:hover { border-color: var(--accent); }
   </style>
 </head>
 <body>
