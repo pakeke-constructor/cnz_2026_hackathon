@@ -262,6 +262,8 @@ const LEVEL_3: Level = {
   pools: [{ asset: "DOGE", price: 30 }],
   victims: [
     new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
+    new Swap("0x4", "Alice", "DOGE", "BUY", 10, 8, 300),
+    new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
@@ -1136,7 +1138,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
 }
 
 function main(): void {
-  currentLevel = LEVEL_3;
+  currentLevel = LEVEL_2;
   buildPalette(currentLevel);
   buildInventory(currentLevel);
   buildBlock();
