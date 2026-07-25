@@ -417,6 +417,42 @@ function readBlock(): BlockBox[] {
 const graph = document.getElementById("graph") as HTMLCanvasElement;
 const graphWrap = document.getElementById("graph-wrap") as HTMLElement;
 const blockArea = document.getElementById("block-area") as HTMLElement;
+const popupsLayer = document.getElementById("popups") as HTMLElement;
+
+// Fire a floating "{wallet} buys/sells x ASSET" popup for a box the execution
+// playhead (the scanner) just entered. Positioned at the box's horizontal
+// centre within the graph overlay; it rises and fades via CSS, then self-removes.
+// Spacers (Noops) announce nothing.
+function spawnTxnPopup(sim: BoxSim): void {
+  if (!(sim.txn instanceof Swap)) return;
+  const swap = sim.txn;
+  const isPlayer = swap.owner === "PLAYER";
+  const who = isPlayer ? "You \u{1F608}" : swap.owner;
+
+  // Third-person "buys/sells" for victims, second-person "buy/sell" for the
+  // player, so both read naturally ("You buy" vs "Steve buys").
+  const verb = (swap.side === "BUY" ? "buy" : "sell") + (isPlayer ? "" : "s");
+  const trade =
+    swap.side === "BUY" && swap.amountIn !== undefined
+      ? `${verb} ${swap.asset} with ${swap.amountIn} ${USDC}`
+      : `${verb} ${swap.qty} ${swap.asset}`;
+
+  const el = document.createElement("div");
+  // Reverted victim swaps read as a failure rather than a trade.
+  el.className = sim.valid
+    ? "popup " + (isPlayer ? "mine" : swap.side === "BUY" ? "buy" : "sell")
+    : "popup revert";
+  el.innerHTML = sim.valid
+    ? `<span class="who">${who}</span>${trade}`
+    : `<span class="who">${who}</span>&#10008; reverts`;
+
+  const wrapRect = graphWrap.getBoundingClientRect();
+  const r = sim.el.getBoundingClientRect();
+  el.style.left = `${r.left + r.width / 2 - wrapRect.left}px`;
+  el.style.bottom = "14px";
+  popupsLayer.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
 
 // Y axis auto-scales to fit all prices, but never shrinks below a [0..50]
 // window — so small moves stay readable and the scale only grows when needed.
@@ -937,8 +973,8 @@ function setupDragging(level: Level): void {
 
 // Per-box wipe durations (ms). Real transactions get a beat to be read; the
 // flat start/end spacers zip by so the run doesn't feel padded.
-const BOX_MS = 560;
-const SPACER_MS = 240;
+const BOX_MS = 2500;
+const SPACER_MS = 420;
 
 interface CurrentExecution {
   readonly level: Level;
@@ -953,6 +989,7 @@ interface CurrentExecution {
   state: State;                       // chain state at the current box boundary
   elapsedMs: number;
   done: boolean;
+  announcedIdx: number;               // highest box index whose popup has fired
 }
 
 let currentExecution: CurrentExecution | null = null;
@@ -1007,9 +1044,10 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
   const exec: CurrentExecution = {
     level, mode, assets, sims, starts, total: acc,
     startMs: performance.now(), raf: 0, frac: 0,
-    state: sims[0].stateBefore, elapsedMs: 0, done: false,
+    state: sims[0].stateBefore, elapsedMs: 0, done: false, announcedIdx: -1,
   };
   currentExecution = exec;
+  popupsLayer.innerHTML = "";              // clear any popups from a prior run
   document.body.classList.add("playing"); // freeze interaction while it plays
 
   const tick = () => {
@@ -1020,6 +1058,12 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
     exec.state = stateAtFrac(exec, exec.frac);
     drawGraph(level, exec.frac);
     renderInventory(level, exec.state);
+
+    // Fire a popup as the scanner ENTERS each new box (frac crosses an integer).
+    // Loop in case a frame skipped several boxes at once, so none are missed.
+    const idx = Math.min(Math.floor(exec.frac), exec.sims.length - 1);
+    for (let i = exec.announcedIdx + 1; i <= idx; i++) spawnTxnPopup(exec.sims[i]);
+    if (idx > exec.announcedIdx) exec.announcedIdx = idx;
 
     if (ms < exec.total) {
       exec.raf = requestAnimationFrame(tick);

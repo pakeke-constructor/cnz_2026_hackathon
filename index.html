@@ -97,6 +97,38 @@
     #graph-wrap { position: relative; flex: 1; min-height: 0; }
     #graph { width: 100%; height: 100%; display: block; }
 
+    /* ---------- Scanner popups: "{wallet} buys/sells x ASSET" ---------- */
+    /* An overlay pinned over the graph. Each popup is spawned at the horizontal
+       centre of the box the playhead just entered, then rises and fades. */
+    #popups { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 4; }
+    .popup {
+      position: absolute;
+      transform: translate(-50%, 0);
+      white-space: nowrap;
+      font-weight: 800;
+      font-size: 15px;
+      padding: 6px 13px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(20,26,36,.94);
+      box-shadow: 0 10px 26px -10px rgba(0,0,0,.85);
+      color: var(--text);
+      animation: popup-rise 2.5s cubic-bezier(.2,.7,.2,1) forwards;
+    }
+    .popup .who { color: var(--muted); font-weight: 700; margin-right: 3px; }
+    .popup.buy  { color: #7ee787; border-color: rgba(46,160,67,.55);  box-shadow: 0 0 20px -4px rgba(46,160,67,.55); }
+    .popup.sell { color: #ff9db0; border-color: rgba(240,80,110,.55); box-shadow: 0 0 20px -4px rgba(240,80,110,.55); }
+    .popup.mine { color: #ffd479; border-color: rgba(210,153,34,.6);  box-shadow: 0 0 22px -4px rgba(210,153,34,.6); }
+    .popup.revert { color: var(--sell); border-color: rgba(240,80,110,.6); text-decoration: none; }
+    .popup.revert .who { color: #ff9db0; }
+    @keyframes popup-rise {
+      0%   { opacity: 0; transform: translate(-50%, 10px) scale(.82); }
+      14%  { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
+      26%  { transform: translate(-50%, -4px) scale(1); }
+      75%  { opacity: 1; }
+      100% { opacity: 0; transform: translate(-50%, -52px) scale(1); }
+    }
+
     /* Block-building area (the block the player submits) */
     #block-panel { background: var(--panel); }
     #block-area {
@@ -391,6 +423,9 @@
       <div id="graph-wrap">
         <!-- Canvas X axis lines up EXACTLY with the transaction boxes below. -->
         <canvas id="graph"></canvas>
+        <!-- Floating "{wallet} buys/sells x ASSET" popups fired as the execution
+             playhead (the scanner) sweeps into each transaction box. -->
+        <div id="popups"></div>
         <div id="inventory-box">
           <div id="inventory-panel">
             <h2>Your inventory</h2>
