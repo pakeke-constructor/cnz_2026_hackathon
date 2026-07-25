@@ -1045,7 +1045,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   let warn = "";
   if (exposed.length) {
     const list = exposed.map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`).join(", ");
-    warn = `<div class="result-warn">You're still holding ${list}. This is exposed to price movement in the next block. Sell back to USDC to lock in your profit.</div>`;
+    warn = `<div class="result-warn">You're still holding ${list}, which causes your profit to count as less. Sell back to USDC to lock in your profit!</div>`;
   }
 
   const box = document.getElementById("result") as HTMLElement;
