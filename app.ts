@@ -172,8 +172,10 @@ interface Level {
 
 const LEVEL_1: Level = {
   // Classic buy-side sandwich, 1 victim.
-  pools: [{ asset: "DOGE", price: 100 }],
-  victims: [new Swap("v1", "Alice", "DOGE", "BUY", 20)],
+  // Prices start in the 20–30 band so they sit nicely inside the fixed 0–50
+  // Y axis (see drawGraph). Sizes are tuned so a sandwich stays under 50.
+  pools: [{ asset: "DOGE", price: 25 }],
+  victims: [new Swap("v1", "Alice", "DOGE", "BUY", 10)],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
 };
 
@@ -186,24 +188,28 @@ function initialState(level: Level): State {
 }
 
 // ---------------------------------------------------------------------
-// Simulation: walk the block, record the pool price after each transaction.
-// (Single-pool MVP: we chart the first pool's asset.)
+// Simulation: walk the block, record EVERY pool's price after each txn.
+// Each asset gets its own price series so the graph can draw one line per
+// asset. A transaction only moves one pool; the others carry forward
+// unchanged, so every series has one point per transaction.
 // ---------------------------------------------------------------------
 interface SimResult {
-  readonly start: number;          // pool price before the block
-  readonly prices: readonly number[]; // pool price AFTER each transaction
+  readonly assets: readonly Asset[];
+  readonly start: ReadonlyMap<Asset, number>;      // price before the block
+  readonly series: ReadonlyMap<Asset, number[]>;   // price AFTER each txn
   readonly finalState: State;
 }
 
 function simulate(level: Level, block: readonly Transaction[]): SimResult {
-  const chartAsset = level.pools[0].asset;
+  const assets = level.pools.map((p) => p.asset);
   let s = initialState(level);
-  const prices: number[] = [];
+  const start = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
+  const series = new Map<Asset, number[]>(assets.map((a) => [a, []]));
   for (const txn of block) {
     s = txn.simulate(s);
-    prices.push(s.price(chartAsset));
+    for (const a of assets) series.get(a)!.push(s.price(a));
   }
-  return { start: level.pools[0].price, prices, finalState: s };
+  return { assets, start, series, finalState: s };
 }
 
 // ---------------------------------------------------------------------
@@ -279,6 +285,17 @@ const graph = document.getElementById("graph") as HTMLCanvasElement;
 const graphWrap = document.getElementById("graph-wrap") as HTMLElement;
 const blockArea = document.getElementById("block-area") as HTMLElement;
 
+// Y axis auto-scales to fit all prices, but never shrinks below a [0..50]
+// window — so small moves stay readable and the scale only grows when needed.
+const Y_MIN_TOP = 50;
+
+// One stable colour per asset, assigned by its position in the level's pools.
+const ASSET_COLORS = ["#58a6ff", "#f778ba", "#3fb950", "#d29922", "#a371f7", "#ff7b72"];
+function assetColor(assets: readonly Asset[], asset: Asset): string {
+  const i = assets.indexOf(asset);
+  return ASSET_COLORS[(i < 0 ? 0 : i) % ASSET_COLORS.length];
+}
+
 function drawGraph(level: Level): void {
   const ctx = graph.getContext("2d")!;
   const dpr = window.devicePixelRatio || 1;
@@ -290,18 +307,22 @@ function drawGraph(level: Level): void {
   ctx.clearRect(0, 0, cssW, cssH);
 
   const block = readBlock(blockArea);
-  const { start, prices } = simulate(level, block);
+  const { assets, start, series } = simulate(level, block);
 
-  // ----- Y scale: fit all prices with a little headroom -----
-  const allPrices = [start, ...prices];
-  const pMin = Math.min(...allPrices);
-  const pMax = Math.max(...allPrices);
-  const pad = Math.max(2, (pMax - pMin) * 0.15);
-  const lo = Math.max(0, pMin - pad);
-  const hi = pMax + pad;
+  // ----- Y scale: auto-fit, but always at least the [0..50] window -----
+  const allPrices: number[] = [];
+  for (const a of assets) {
+    allPrices.push(start.get(a)!);
+    for (const p of series.get(a)!) allPrices.push(p);
+  }
+  const pMax = allPrices.length ? Math.max(...allPrices) : 0;
+  const Y_LO = 0;
+  const Y_HI = Math.max(Y_MIN_TOP, Math.ceil((pMax * 1.1) / 10) * 10);
   const padL = 44, padR = 12, padT = 10, padB = 14;
   const plotH = cssH - padT - padB;
-  const yOf = (price: number) => padT + plotH * (1 - (price - lo) / (hi - lo || 1));
+  const rightX = cssW - padR;
+  const yOf = (price: number) =>
+    padT + plotH * (1 - (price - Y_LO) / (Y_HI - Y_LO));
 
   // ----- X positions: measured from the real boxes below -----
   const wrapRect = graphWrap.getBoundingClientRect();
@@ -317,13 +338,13 @@ function drawGraph(level: Level): void {
   ctx.fillStyle = "#8b949e";
   ctx.lineWidth = 1;
   ctx.font = "11px ui-sans-serif, system-ui";
-  const ticks = 4;
+  const ticks = 5;
   for (let t = 0; t <= ticks; t++) {
-    const price = lo + ((hi - lo) * t) / ticks;
+    const price = Y_LO + ((Y_HI - Y_LO) * t) / ticks;
     const y = yOf(price);
     ctx.beginPath();
     ctx.moveTo(padL, y);
-    ctx.lineTo(cssW - padR, y);
+    ctx.lineTo(rightX, y);
     ctx.stroke();
     ctx.fillText(price.toFixed(0), 6, y + 4);
   }
@@ -338,23 +359,44 @@ function drawGraph(level: Level): void {
     ctx.stroke();
   }
 
-  // ----- price line (starts at pre-block price, steps per txn) -----
-  ctx.strokeStyle = "#58a6ff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(xOfIndex(-1), yOf(start));
-  for (let i = 0; i < prices.length; i++) ctx.lineTo(xOfIndex(i), yOf(prices[i]));
-  ctx.stroke();
-
-  // ----- dots at each resulting price -----
-  ctx.fillStyle = "#58a6ff";
+  // ----- one line per asset -----
+  // The line starts at the pre-block price (left edge), steps once per
+  // transaction, then holds the LAST SEEN price flat out to the right edge.
+  // With no transactions this is just a flat line at the current price.
   const drawDot = (x: number, y: number) => {
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, Math.PI * 2);
     ctx.fill();
   };
-  drawDot(xOfIndex(-1), yOf(start));
-  for (let i = 0; i < prices.length; i++) drawDot(xOfIndex(i), yOf(prices[i]));
+
+  for (const asset of assets) {
+    const color = assetColor(assets, asset);
+    const startPrice = start.get(asset)!;
+    const pts = series.get(asset)!;
+    const lastPrice = pts.length ? pts[pts.length - 1] : startPrice;
+
+    // line
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xOfIndex(-1), yOf(startPrice));
+    for (let i = 0; i < pts.length; i++) ctx.lineTo(xOfIndex(i), yOf(pts[i]));
+    // hold flat to the right edge at the last seen price
+    ctx.lineTo(rightX, yOf(lastPrice));
+    ctx.stroke();
+
+    // dots at each resulting price
+    ctx.fillStyle = color;
+    drawDot(xOfIndex(-1), yOf(startPrice));
+    for (let i = 0; i < pts.length; i++) drawDot(xOfIndex(i), yOf(pts[i]));
+
+    // asset label riding the flat tail on the right
+    ctx.fillStyle = color;
+    ctx.font = "600 11px ui-sans-serif, system-ui";
+    ctx.textAlign = "right";
+    ctx.fillText(asset, rightX - 2, yOf(lastPrice) - 5);
+    ctx.textAlign = "left";
+  }
 }
 
 // ---------------------------------------------------------------------
