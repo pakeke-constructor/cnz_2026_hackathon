@@ -112,11 +112,10 @@ class State {
     balances: Map<Owner, Map<Asset, number>>
     pools: List<LP>
 
-    step(): [State, boolean] {
+    step(): State {
         // this function returns a clone of itself with updated values.
         // think of it as "stepping forward 1 transaction" in the block.
-        const isFinished = false;
-        return new State(...), isFinished
+        return new State(...)
     }
 }
 
@@ -128,9 +127,10 @@ class Transaction {
     simulate(s: State): State {}
 }
 
-class VictimTransaction extends Transaction {
-    asset1: string
-    asset2: string
+class VictimSwap extends Transaction {
+    assetIn: string
+    assetOut: string
+    amountOutMin: number
 }
 
 
