@@ -126,6 +126,8 @@ type Block = List<Transaction>
 
 
 class Transaction {
+    owner: Owner
+
     simulate(s: State): State {
         // this function returns a clone of itself with updated values.
         // think of it as "stepping forward 1 transaction" in the block.
