@@ -283,6 +283,10 @@ function txnEl(txn: Transaction, opts: { victim?: boolean; editable?: boolean } 
     slider.max = "40";
     slider.step = "1";
     slider.value = String(swap.qty);
+    // THE ONLY sanctioned DOM->state boundary. Data flows one way everywhere
+    // else (immutable txnById -> rendered DOM); reading the DOM back into logic
+    // is what caused the sell-clamp bug. Reading slider.value is valid HERE and
+    // only here, because the user physically moving the slider IS the new intent.
     slider.addEventListener("input", () => {
       const q = Number(slider.value);
       const cur = txnById.get(txn.id) as Swap;
@@ -340,32 +344,78 @@ function assetColor(assets: readonly Asset[], asset: Asset): string {
   return ASSET_COLORS[(i < 0 ? 0 : i) % ASSET_COLORS.length];
 }
 
-// Update each editable SELL box's slider so its max never exceeds the player's
-// holdings of that asset when the box runs. Returns true if any current value
-// had to be clamped down (meaning quantities changed and the caller should
-// re-simulate).
-function capSellSliders(sims: readonly BoxSim[]): boolean {
-  let clamped = false;
+// ---------------------------------------------------------------------
+// Validation — generic, idempotent, run to a fixpoint every frame.
+//
+// An "invariant" inspects the simulated block and CORRECTS any transaction
+// data that violates a rule (e.g. you can't sell DOGE you aren't holding yet).
+// Each invariant returns `true` if it actually changed something.
+//
+// Why a loop instead of one pass? One correction can change the state a LATER
+// box sees: if you reduce a BUY, a SELL that comes after it now has less
+// inventory to draw on and must be clamped too. A single top-down pass would
+// miss that. So `validate` re-simulates and re-runs the invariants until
+// nothing changes (capped at MAX_VALIDATION_PASSES for safety). This is O(n²)
+// and deliberately dumb — but it's extremely robust and easy to extend.
+//
+// The whole thing rests on every invariant being IDEMPOTENT: validating an
+// already-valid block must change nothing. That's what guarantees the loop
+// reaches a fixpoint and settles instead of oscillating forever. New rules
+// (can't spend USDC you don't have, flash-loan legs must balance, etc.) just
+// get added to INVARIANTS below and inherit the same fixpoint machinery.
+// ---------------------------------------------------------------------
+const MAX_VALIDATION_PASSES = 5;
+
+// Invariant: a SELL box can never sell more of an asset than the player holds
+// at the moment it runs. We also keep each slider's `max` in sync so the UI
+// can't even offer an illegal quantity.
+function invariantSellInventory(sims: readonly BoxSim[]): boolean {
+  let changed = false;
   for (const s of sims) {
     if (!(s.txn instanceof Swap) || s.txn.side !== "SELL") continue;
     const slider = s.el.querySelector<HTMLInputElement>("input.qty");
     if (!slider) continue; // victims aren't editable
 
     const cap = Math.max(0, Math.floor(s.playerAssetBefore));
-    slider.max = String(cap);
-    if (Number(slider.value) > cap) {
-      slider.value = String(cap);
-      const cur = txnById.get(s.txn.id) as Swap;
-      txnById.set(s.txn.id, cur.withQty(cap)); // immutable edit
+    // Compare against the TRANSACTION's qty (our source of truth), never the
+    // slider's DOM value. Setting slider.max below the current value makes the
+    // browser silently auto-clamp slider.value — so reading slider.value here
+    // would see the already-clamped number and wrongly conclude "nothing to do,"
+    // leaving the real txn data stale. Decide first, then sync the DOM.
+    const cur = txnById.get(s.txn.id) as Swap;
+    const clampedQty = Math.min(cur.qty, cap);
+    if (clampedQty !== cur.qty) {
+      txnById.set(s.txn.id, cur.withQty(clampedQty)); // immutable edit
       const amt = s.el.querySelector<HTMLElement>(".amt");
-      if (amt) amt.textContent = `${cap} ${cur.asset}`;
-      clamped = true;
+      if (amt) amt.textContent = `${clampedQty} ${cur.asset}`;
+      changed = true;
     }
+    slider.max = String(cap);
+    slider.value = String(clampedQty);
   }
-  return clamped;
+  return changed;
+}
+
+const INVARIANTS: readonly ((sims: readonly BoxSim[]) => boolean)[] = [
+  invariantSellInventory,
+];
+
+// Re-simulate and apply every invariant until the block stops changing.
+// Idempotent overall: calling it on an already-valid block is a no-op.
+function validate(level: Level): void {
+  for (let pass = 0; pass < MAX_VALIDATION_PASSES; pass++) {
+    const { sims } = simulateBoxes(level, readBlock());
+    let changed = false;
+    for (const inv of INVARIANTS) changed = inv(sims) || changed;
+    if (!changed) return;
+  }
 }
 
 function drawGraph(level: Level): void {
+  // Correct the block to a fixpoint BEFORE we render, so what's drawn always
+  // reflects legal quantities (sliders clamped to inventory, etc.).
+  validate(level);
+
   const ctx = graph.getContext("2d")!;
   const dpr = window.devicePixelRatio || 1;
   const cssW = graphWrap.clientWidth;
@@ -382,14 +432,6 @@ function drawGraph(level: Level): void {
     boxes.some((b) => !(b.txn instanceof Noop))
   );
 
-  // Cap every SELL slider at the player's inventory of that asset at the moment
-  // the box runs — you can't sell DOGE you don't hold yet. Clamping a slider
-  // down only ever frees up inventory for later boxes, so re-simulating once is
-  // enough to settle; we redraw with the corrected quantities and bail.
-  if (capSellSliders(sims)) {
-    drawGraph(level);
-    return;
-  }
 
   // Each box's left/right edge in canvas space. A box owns the span [xL, xR];
   // the price enters at xL (before) and leaves at xR (after).
@@ -636,6 +678,16 @@ function setupDragging(level: Level): void {
     animation: 150,
     forceFallback: true,
   });
+}
+
+// Submit the block. Runs one more explicit validation pass first — the block
+// is already validated every frame, but re-validating here means submission can
+// never act on stale/illegal quantities regardless of how it was triggered.
+// (No submit button is wired up yet; this is the hook the UI will call.)
+function submit(level: Level): void {
+  validate(level);
+  drawGraph(level);
+  // TODO: walk the block, tally profit/bribes, and reveal the result.
 }
 
 function main(): void {

@@ -228,3 +228,8 @@ Remove the victim and you'd net exactly 0. Correct on both counts.
 2. **You can drop pool reserves entirely.** The linear pool doesn't need `pool1/pool2` — its whole
    state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class to basically `{ asset, price }`.
 
+
+<agent_guidelines>
+- You are working with an experienced engineer. If you need help; ask.
+- Try to somewhat avoid running the code in chrome if possible; since 
+</agent_guidelines>
