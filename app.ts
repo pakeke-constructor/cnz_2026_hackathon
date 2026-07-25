@@ -617,19 +617,21 @@ function drawGraph(level: Level, execFrac?: number): void {
     const lim = s.txn.limitPrice();
     if (lim === undefined) continue;
     const { xL, xR } = edgesOf(s.el);
-    const y = yOf(lim.limit);
-    const yOther = yOf(lim.other);
+    // `lim.other` is always the lower-priced edge of the swap's sweep band; the
+    // revert cutoff renders on that lower edge (more intuitive to watch).
+    const y = yOf(lim.other);
+    const yOther = yOf(lim.limit);
     ctx.fillStyle = "rgba(240,80,110,0.16)";
     if (s.txn.side === "BUY") ctx.fillRect(xL, padT, xR - xL, Math.max(0, y - padT));
     else ctx.fillRect(xL, y, xR - xL, Math.max(0, padT + plotH - y));
-    // thin "before" edge line for context
+    // thin edge line for context (the other side of the sweep band)
     ctx.strokeStyle = "rgba(240,80,110,0.6)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(xL, yOther);
     ctx.lineTo(xR, yOther);
     ctx.stroke();
-    // thick "after" edge line: the hard revert threshold
+    // thick edge line: the hard revert threshold
     ctx.strokeStyle = "#f0506e";
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -1152,8 +1154,6 @@ function main(): void {
 
   (document.getElementById("btn-simulate") as HTMLElement).onclick = () =>
     runExecution(currentLevel, "simulate");
-  (document.getElementById("btn-submit") as HTMLElement).onclick = () =>
-    runExecution(currentLevel, "submit");
 }
 
 main();

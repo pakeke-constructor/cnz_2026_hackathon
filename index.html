@@ -300,7 +300,7 @@
     .sortable-drag { cursor: grabbing; }
 
     /* ---------- Execution controls ---------- */
-    #controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 10px; }
+    #controls { display: grid; grid-template-columns: 1fr; gap: 8px; padding-top: 10px; }
     #controls button {
       min-height: 42px;
       font: inherit;
@@ -316,8 +316,8 @@
     }
     #controls button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.28); }
     #controls button:active { transform: translateY(0); }
-    #btn-submit { background: linear-gradient(180deg, #2ea043, #247d34); border-color: rgba(46,160,67,.7); }
-    #btn-submit:hover { border-color: var(--buy); }
+    #btn-simulate { background: linear-gradient(180deg, #2ea043, #247d34); border-color: rgba(46,160,67,.7); }
+    #btn-simulate:hover { border-color: var(--buy); }
     body.playing #controls button { opacity: .5; pointer-events: none; }
     body.playing #block-area,
     body.playing #mempool,
@@ -381,7 +381,7 @@
 
   <div id="main">
     <section id="graph-panel" class="panel">
-      <h2>DOGE / USDC price — over the block</h2>
+      <h2>Asset price over the block (USD)</h2>
       <div id="graph-wrap">
         <!-- Canvas X axis lines up EXACTLY with the transaction boxes below. -->
         <canvas id="graph"></canvas>
@@ -391,8 +391,7 @@
             <div id="inventory"><!-- balances injected by app.js --></div>
           </div>
           <div id="controls">
-            <button id="btn-simulate" type="button">Simulate</button>
-            <button id="btn-submit" type="button">Submit block</button>
+            <button id="btn-simulate" type="button">Simulate Block</button>
           </div>
         </div>
       </div>
