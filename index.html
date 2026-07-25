@@ -368,6 +368,38 @@
     }
     .inv-row.exposed .inv-amt { color: #ffc27a; }
 
+    /* ---------- Bottom-left level navigation ---------- */
+    #level-nav {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      z-index: 15;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(14,17,22,.85);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 24px -12px rgba(0,0,0,.9);
+    }
+    #level-nav button {
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text);
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      cursor: pointer;
+      transition: border-color .12s ease, opacity .12s ease;
+    }
+    #level-nav button:hover { border-color: var(--accent); }
+    #level-nav button:disabled { opacity: .35; cursor: default; border-color: var(--line); }
+    #level-label { font-size: 11px; font-weight: 700; color: var(--muted); min-width: 74px; text-align: center; }
+
     /* ---------- Full-screen execution summary ---------- */
     #result {
       position: fixed;
@@ -447,6 +479,13 @@
       <h2>Public mempool — unordered victim transactions</h2>
       <div id="mempool"><!-- victim transactions --></div>
     </section>
+  </div>
+
+  <!-- Bottom-left level navigation: jump between levels at any time. -->
+  <div id="level-nav">
+    <button id="btn-prev-level" type="button" title="Previous level">◀ Prev</button>
+    <span id="level-label">Level 1</span>
+    <button id="btn-next-level" type="button" title="Next level">Next ▶</button>
   </div>
 
   <div id="result" class="hidden" role="dialog" aria-modal="true" aria-live="polite"></div>

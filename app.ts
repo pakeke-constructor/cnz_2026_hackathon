@@ -223,6 +223,13 @@ interface Level {
   // A sell-side sandwich needs you to already hold the asset, so you can SELL to
   // front-run the victim's sell, then BUY it back — ending with the same bag.
   readonly startInventory?: Readonly<Record<Asset, number>>;
+  // The bot profit (after bribe) the player must reach to clear the level and
+  // unlock the "Next Level" button. Hardcoded per level — tune to sit just below
+  // the optimal extraction so a sloppy sandwich fails but a clean one passes.
+  readonly profitThreshold: number;
+  // Shown when the player falls short of the threshold — a specific nudge about
+  // what they likely did wrong. Rendered in the same spot as the inventory hint.
+  readonly hint: string;
 }
 
 const LEVEL_1: Level = {
@@ -234,6 +241,8 @@ const LEVEL_1: Level = {
     new Swap("0x1", "Steve", "DOGE", "BUY", 10, 8, 300),
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  profitThreshold: 1.0,
+  hint: "Classic buy-side sandwich: BUY DOGE right BEFORE Steve to push the price up, then SELL the same amount right AFTER him. Size your front-run so Steve's trade only just goes through — the bigger the squeeze, the fatter your back-run.",
 };
 
 
@@ -245,6 +254,8 @@ const LEVEL_2: Level = {
     new Swap("0x2", "Kodi", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  profitThreshold: 2.0,
+  hint: "Two victims both BUY DOGE. Wrap BOTH of them in a single sandwich: one front-run BUY before the pair, one back-run SELL after the pair. Don't sandwich them separately — chaining the victims lets one front-run capture both price pushes.",
 };
 
 
@@ -265,6 +276,8 @@ const LEVEL_3: Level = {
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
+  profitThreshold: 1.0,
+  hint: "Sell-side sandwich: the victim is SELLING, so you SELL FIRST to push the price DOWN, let them dump into the lower price, then BUY BACK cheap. Front-run with the DOGE you already hold, and end the block back at your starting 40 DOGE.",
 };
 
 
@@ -277,6 +290,8 @@ const LEVEL_4: Level = {
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
+  profitThreshold: 2.0,
+  hint: "There are TWO opportunities here: Steve SELLS and John BUYS. Sandwich each in the right direction — SELL-then-BUY around Steve, BUY-then-SELL around John — and order the block so both sandwiches nest cleanly without cancelling each other out.",
 };
 
 
@@ -295,6 +310,8 @@ const LEVEL_5: Level = {
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 80 },
+  profitThreshold: 5.0,
+  hint: "A whole cluster of BUYs to wrap. Group ALL the victim buys together and wrap the entire cluster in ONE big sandwich — a single front-run BUY before them and a single back-run SELL after. Size the front-run large (you've got the DOGE for it) to ride the full price move.",
 };
 
 
@@ -313,6 +330,8 @@ const LEVEL_6: Level = {
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
+  profitThreshold: 5.0,
+  hint: "Mixed flow: one SELLER (Steve) and a pack of BUYERS. Reorder the block so the buys are batched together and sandwiched buy-side, while Steve's sell is handled in its own direction. The order you place the victims in is what unlocks the profit here.",
 };
 
 
@@ -492,7 +511,7 @@ function spawnTxnPopup(sim: BoxSim): void {
     : "popup revert";
   el.innerHTML = sim.valid
     ? `<span class="who">${who}</span>${trade}`
-    : `<span class="who">${who}</span>&#10008; reverts`;
+    : `<span class="who">${who}</span>&#10008; this transaction reverts`;
 
   const wrapRect = graphWrap.getBoundingClientRect();
   const r = sim.el.getBoundingClientRect();
@@ -844,7 +863,12 @@ function drawGraph(level: Level, execFrac?: number): void {
 // ---------------------------------------------------------------------
 // Wire up: palette (from allowedOperations), mempool (victims), dragging.
 // ---------------------------------------------------------------------
-let currentLevel: Level = LEVEL_1;
+// The ordered level list. Prev/Next navigation and the "Next Level" win button
+// both index into this array.
+const LEVELS: readonly Level[] = [LEVEL_1, LEVEL_2, LEVEL_3, LEVEL_4, LEVEL_5, LEVEL_6];
+
+let currentLevelIdx = 0;
+let currentLevel: Level = LEVELS[currentLevelIdx];
 
 // Palette templates carry NO data of their own; each carries the index of the
 // PlayerTxnMeta it spawns. On drop we call that factory's generate().
@@ -934,10 +958,13 @@ function buildMempool(level: Level): void {
   }
 }
 
-function setupDragging(level: Level): void {
+// Wired ONCE at startup. The Sortable instances live on the persistent
+// blockArea/mempool/palette elements, so we never re-create them per level —
+// the handlers read `currentLevel` live instead of closing over a fixed level.
+function setupDragging(): void {
   const mempool = document.getElementById("mempool") as HTMLElement;
   const palette = document.getElementById("palette") as HTMLElement;
-  const onChange = () => drawGraph(level);
+  const onChange = () => drawGraph(currentLevel);
 
   // While a player's own box is being dragged, turn the mempool into a red
   // "drop to cancel" zone. Any drag that starts on a `.mine` box lights it up.
@@ -964,7 +991,7 @@ function setupDragging(level: Level): void {
       // editable player transaction minted by the corresponding factory.
       if (evt.from === palette) {
         const el: HTMLElement = evt.item;
-        const meta = level.allowedOperations[Number(el.dataset.meta)];
+        const meta = currentLevel.allowedOperations[Number(el.dataset.meta)];
         const txn = meta.generate(10);
         txnById.set(txn.id, txn);
         el.replaceWith(txnEl(txn, { editable: true }));
@@ -1208,37 +1235,75 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
     warn = `<div class="result-warn">Your inventory didn't return to where it started.\nYou have ${list}. Trade back to your starting inventory to lock in your profit and avoid exposure to the next block's price move!</div>`;
   }
 
+  // Did the player clear the level's profit bar? That gates the "Next Level"
+  // button; falling short shows the level's hardcoded hint and a "Try Again".
+  const passed = settlement.botProfit >= level.profitThreshold - 1e-9;
+  const levelIdx = LEVELS.indexOf(level);
+  const hasNext = levelIdx >= 0 && levelIdx < LEVELS.length - 1;
+
+  const hintHtml = passed
+    ? ""
+    : `<div class="result-warn result-hint">💡 ${level.hint}</div>`;
+  const buttonHtml = passed
+    ? hasNext
+      ? `<button id="result-next">Next Level →</button>`
+      : `<button id="result-close">🏆 You beat the final level!</button>`
+    : `<button id="result-close">Try Again</button>`;
+
   const box = document.getElementById("result") as HTMLElement;
   box.className = `result-${cls}`;
   box.innerHTML = `<div class="result-card">
-    <div class="result-title">${mode === "simulate" ? "Simulated" : "Submitted"} block</div>
+    <div class="result-title">${mode === "simulate" ? "Simulated" : "Submitted"} block · Level ${levelIdx + 1}</div>
     <div class="result-hash">${hash}</div>
     <div class="result-profit">${sign}${money(settlement.botProfit)} bot profit</div>
     <div class="result-grid">
       <div class="result-row"><span>Victim funds lost</span><strong>${money(victimLoss)}</strong></div>
       <div class="result-row"><span>Profit before bribe</span><strong>${money(settlement.profitBeforeBribe)}</strong></div>
-      <div class="result-row"><span>Validator bribe (96%)</span><strong>−${money(settlement.validatorBribe)}</strong></div>
+      <div class="result-row"><span>Validator bribe (98%)</span><strong>−${money(settlement.validatorBribe)}</strong></div>
       <div class="result-row"><span>Bot profit after bribe</span><strong>${money(settlement.botProfit)}</strong></div>
+      <div class="result-row"><span>Target to clear level</span><strong>${passed ? "✓ " : ""}${money(level.profitThreshold)}</strong></div>
       <div class="result-row"><span>Total gas fees</span><strong>${money(settlement.gasFees)}</strong></div>
       <div class="result-row"><span>Transactions executed</span><strong>${transactions.length}</strong></div>
     </div>
     ${warn}
-    <button id="result-close">Back to block builder</button>
+    ${hintHtml}
+    ${buttonHtml}
   </div>`;
-  (document.getElementById("result-close") as HTMLElement).onclick = () => {
-    hideResult();
-    drawGraph(level);
-  };
+  const closeBtn = document.getElementById("result-close");
+  if (closeBtn) closeBtn.onclick = () => { hideResult(); drawGraph(level); };
+  const nextBtn = document.getElementById("result-next");
+  if (nextBtn) nextBtn.onclick = () => { hideResult(); loadLevel(currentLevelIdx + 1); };
 }
 
-function main(): void {
-  currentLevel = LEVEL_2;
+// Swap the whole board over to a level: rebuild the palette, inventory, an empty
+// block, and the mempool, then redraw. Sortable stays wired (setupDragging reads
+// currentLevel live), so we never touch it here. Clamped to the level range.
+function loadLevel(idx: number): void {
+  stopExecution();
+  hideResult();
+  currentLevelIdx = Math.max(0, Math.min(LEVELS.length - 1, idx));
+  currentLevel = LEVELS[currentLevelIdx];
   buildPalette(currentLevel);
   buildInventory(currentLevel);
   buildBlock();
   buildMempool(currentLevel);
-  setupDragging(currentLevel);
   drawGraph(currentLevel);
+  updateLevelNav();
+}
+
+// Reflect the current level in the bottom-left nav (label + disabled bounds).
+function updateLevelNav(): void {
+  const label = document.getElementById("level-label");
+  if (label) label.textContent = `Level ${currentLevelIdx + 1} / ${LEVELS.length}`;
+  const prev = document.getElementById("btn-prev-level") as HTMLButtonElement | null;
+  const next = document.getElementById("btn-next-level") as HTMLButtonElement | null;
+  if (prev) prev.disabled = currentLevelIdx === 0;
+  if (next) next.disabled = currentLevelIdx === LEVELS.length - 1;
+}
+
+function main(): void {
+  setupDragging();
+  loadLevel(0);
   window.addEventListener("resize", () => {
     // Mid-playback the rAF loop repaints anyway; only redraw here when idle.
     if (!currentExecution) drawGraph(currentLevel);
@@ -1246,6 +1311,10 @@ function main(): void {
 
   (document.getElementById("btn-simulate") as HTMLElement).onclick = () =>
     runExecution(currentLevel, "simulate");
+  (document.getElementById("btn-prev-level") as HTMLElement).onclick = () =>
+    loadLevel(currentLevelIdx - 1);
+  (document.getElementById("btn-next-level") as HTMLElement).onclick = () =>
+    loadLevel(currentLevelIdx + 1);
 }
 
 main();
