@@ -215,10 +215,10 @@ interface BoxSim {
   readonly txn: Transaction;
   readonly before: ReadonlyMap<Asset, number>;
   readonly after: ReadonlyMap<Asset, number>;
-  // The PLAYER's balance of this box's traded asset just BEFORE it executes.
-  // Used to cap a SELL slider so you can't sell more than you're holding at
-  // that point in the block. NaN for boxes that aren't player swaps.
-  readonly playerAssetBefore: number;
+  // The full immutable chain snapshot as it was JUST BEFORE this box ran.
+  // Invariants read whatever they need off this locally (e.g. the player's
+  // asset balance, to cap a SELL slider) — no per-rule scalars on the sim.
+  readonly stateBefore: State;
 }
 
 function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
@@ -229,14 +229,11 @@ function simulateBoxes(level: Level, boxes: readonly BlockBox[]): {
   let s = initialState(level);
   const sims: BoxSim[] = [];
   for (const { el, txn } of boxes) {
+    const stateBefore = s; // immutable: safe to hand out as-is
     const before = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-    const playerAssetBefore =
-      txn instanceof Swap && txn.owner === "PLAYER"
-        ? s.balance("PLAYER", txn.asset)
-        : NaN;
     s = txn.simulate(s);
     const after = new Map<Asset, number>(assets.map((a) => [a, s.price(a)]));
-    sims.push({ el, txn, before, after, playerAssetBefore });
+    sims.push({ el, txn, before, after, stateBefore });
   }
   return { assets, sims };
 }
@@ -372,7 +369,7 @@ function invariantSellInventory(sims: readonly BoxSim[]): boolean {
     const slider = s.el.querySelector<HTMLInputElement>("input.qty");
     if (!slider) continue; // victims aren't editable
 
-    const cap = Math.max(0, Math.floor(s.playerAssetBefore));
+    const cap = Math.max(0, Math.floor(s.stateBefore.balance("PLAYER", s.txn.asset)));
     // Compare against the TRANSACTION's qty (our source of truth), never the
     // slider's DOM value. Setting slider.max below the current value makes the
     // browser silently auto-clamp slider.value — so reading slider.value here
@@ -591,6 +588,27 @@ function spacerEl(kind: "lead" | "trail"): HTMLElement {
   return el;
 }
 
+// Show the player's STARTING inventory at the bottom of the sidebar. Read
+// straight from the level's initial state so it can never drift from what the
+// player actually begins the block with.
+function buildInventory(level: Level): void {
+  const inv = document.getElementById("inventory") as HTMLElement;
+  inv.innerHTML = "";
+  const player = initialState(level).balances.get("PLAYER") ?? new Map<Asset, number>();
+  for (const [asset, amount] of player) {
+    const row = document.createElement("div");
+    row.className = "inv-row";
+    const a = document.createElement("span");
+    a.className = "inv-asset";
+    a.textContent = asset;
+    const v = document.createElement("span");
+    v.className = "inv-amt";
+    v.textContent = amount.toLocaleString();
+    row.append(a, v);
+    inv.appendChild(row);
+  }
+}
+
 function buildBlock(): void {
   blockArea.innerHTML = "";
   blockArea.append(spacerEl("lead"), spacerEl("trail"));
@@ -689,6 +707,7 @@ function submit(level: Level): void {
 function main(): void {
   currentLevel = LEVEL_1;
   buildPalette(currentLevel);
+  buildInventory(currentLevel);
   buildBlock();
   buildMempool(currentLevel);
   setupDragging(currentLevel);

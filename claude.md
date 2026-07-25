@@ -225,11 +225,10 @@ Remove the victim and you'd net exactly 0. Correct on both counts.
 
 1. **Keep price above 0.** Selling pushes price down linearly, so a big enough sell (or a level that
    allows it) could cross zero and make the trapezoid math go weird. Design levels so price stays positive, or floor it.
-2. **You can drop pool reserves entirely.** The linear pool doesn't need `pool1/pool2` — its whole
-   state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class to basically `{ asset, price }`.
+2. **You can drop pool reserves entirely.** The linear pool doesn't need `pool1/pool2` — its whole state is just a current `price` (and an implicit slope, 1 for now). That simplifies the `LP` class to basically `{ asset, price }`.
 
 
 <agent_guidelines>
 - You are working with an experienced engineer. If you need help; ask.
-- Try to somewhat avoid running the code in chrome if possible; since 
+- Try to somewhat avoid running the code in chrome if possible; since it takes a lot of time, and time is very important.
 </agent_guidelines>

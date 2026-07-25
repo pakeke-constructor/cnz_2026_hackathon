@@ -46,6 +46,50 @@
     #palette { display: flex; flex-direction: column; gap: 10px; }
     .hint { font-size: 11px; color: var(--muted); }
 
+    /* Starting inventory, floated over the right edge of the graph and
+       vertically centered. pointer-events:none so it never blocks the canvas. */
+    #inventory-box {
+      position: absolute;
+      right: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(14,17,22,.82);
+      backdrop-filter: blur(4px);
+      box-shadow: 0 8px 24px -10px rgba(0,0,0,.7);
+      pointer-events: none;
+      z-index: 2;
+    }
+    #inventory-box h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+    #inventory { display: flex; flex-direction: column; gap: 6px; }
+    .inv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 14px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+    .inv-asset {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted);
+    }
+    .inv-amt {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      color: var(--text);
+    }
+
     /* ---------- Main column: graph / block / mempool ---------- */
     #main {
       display: grid;
@@ -270,6 +314,11 @@
       <div id="graph-wrap">
         <!-- Canvas X axis lines up EXACTLY with the transaction boxes below. -->
         <canvas id="graph"></canvas>
+        <!-- Starting inventory, floated over the right edge of the graph. -->
+        <div id="inventory-box">
+          <h2>Your inventory</h2>
+          <div id="inventory"><!-- balances injected by app.js --></div>
+        </div>
       </div>
     </section>
 
