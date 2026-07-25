@@ -77,3 +77,5 @@ LP-price-area: (top 1/3 of screen) This shows how the LP prices change over time
 Left sidebar: This is where you go to create a new transaction. Drag and drop from the left sidebar to create 
 Bottom-right buttons: Simulate, and Submit. Simulate tests the block, without saying whether it's optimal. Submit will properly submit it, and let you know whether your solution is optimal.
 
+
+## 
