@@ -217,11 +217,22 @@ const LEVEL_1: Level = {
   // Y axis (see drawGraph). Sizes are tuned so a sandwich stays under 50.
   pools: [{ asset: "DOGE", price: 25 }],
   victims: [
+    new Swap("0x1", "Steve", "DOGE", "BUY", 10, 8, 300),
+  ],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+};
+
+
+const LEVEL_2: Level = {
+  // buy-side sandwich, 2 victims.
+  pools: [{ asset: "DOGE", price: 25 }],
+  victims: [
     new Swap("0x1", "Alice", "DOGE", "BUY", 10, 8, 300),
     new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
 };
+
 
 function initialState(level: Level): State {
   const pools = new Map<Asset, LP>(level.pools.map((p) => [p.asset, p]));
@@ -985,7 +996,7 @@ interface Settlement {
 }
 
 function calculateSettlement(grossGains: number, transactionCount: number): Settlement {
-  const gasFees = transactionCount * 0.3;
+  const gasFees = transactionCount * 0.02;
   const profitBeforeBribe = grossGains - gasFees;
   const validatorBribe = Math.max(0, profitBeforeBribe) * VALIDATOR_BRIBE_RATE;
   const botProfit = profitBeforeBribe - validatorBribe;
