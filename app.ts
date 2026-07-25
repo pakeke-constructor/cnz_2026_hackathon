@@ -241,8 +241,8 @@ const LEVEL_2: Level = {
   // buy-side sandwich, 2 victims.
   pools: [{ asset: "DOGE", price: 25 }],
   victims: [
-    new Swap("0x1", "Alice", "DOGE", "BUY", 10, 8, 300),
-    new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
+    new Swap("0x1", "Jenks", "DOGE", "BUY", 10, 8, 300),
+    new Swap("0x2", "Kodi", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
 };
@@ -261,13 +261,61 @@ const LEVEL_3: Level = {
   // the optimal squeeze.
   pools: [{ asset: "DOGE", price: 30 }],
   victims: [
+    new Swap("0x1", "Jenks", "DOGE", "SELL", 10, 180),
+  ],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  startInventory: { DOGE: 40 },
+};
+
+
+const LEVEL_4: Level = {
+  // COMBINED SELL-SIDE + BUY-SIDE
+  pools: [{ asset: "DOGE", price: 70 }],
+  victims: [
     new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
-    new Swap("0x4", "Alice", "DOGE", "BUY", 10, 8, 300),
     new Swap("0x2", "John", "DOGE", "BUY", 10, 6, 300)
   ],
   allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
   startInventory: { DOGE: 40 },
 };
+
+
+
+
+const LEVEL_5: Level = {
+  // SUPER BIG BUY-SIDE:
+  pools: [{ asset: "DOGE", price: 70 }],
+  victims: [
+    new Swap("0x1", "Steve", "DOGE", "BUY", 6, 180),
+    new Swap("0x1", "Steve", "DOGE", "BUY", 4, 280),
+    new Swap("0x1", "Steve", "DOGE", "BUY", 24, 480),
+    new Swap("0x1", "Steve", "DOGE", "BUY", 9, 500),
+    new Swap("0x1", "Steve", "DOGE", "BUY", 7, 600),
+    new Swap("0x2", "John", "DOGE", "BUY", 10, 700, 300)
+  ],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  startInventory: { DOGE: 80 },
+};
+
+
+
+
+
+
+const LEVEL_6: Level = {
+  pools: [{ asset: "DOGE", price: 30 }],
+  victims: [
+    new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
+    new Swap("0x2", "Vitalik", "DOGE", "BUY", 10, 6, 300),
+    new Swap("0x4", "", "DOGE", "BUY", 10, 6, 300),
+    new Swap("0x5", "John", "DOGE", "BUY", 10, 6, 300),
+    new Swap("0x5", "John", "DOGE", "BUY", 10, 6, 300),
+  ],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  startInventory: { DOGE: 40 },
+};
+
+
 
 
 const STARTING_USDC = 100000;
