@@ -78,4 +78,11 @@ Left sidebar: This is where you go to create a new transaction. Drag and drop fr
 Bottom-right buttons: Simulate, and Submit. Simulate tests the block, without saying whether it's optimal. Submit will properly submit it, and let you know whether your solution is optimal.
 
 
-## 
+## ARCHITECTURE / TECH-STACK:
+Use basic JS + HTML.
+Don't use any framework for now.
+
+TODO: What should we use for input management, and draggable boxes and stuff?
+Maybe three.js or something? Or maybe JS canvases? Or maybe we represent boxes as divs?
+Or use a library? What's a good way to do this?
+
