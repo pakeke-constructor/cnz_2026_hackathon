@@ -435,7 +435,12 @@
       <div id="mempool"><!-- victim transactions --></div>
     </section>
   </div>
+  <div id="controls">
+    <button id="btn-simulate" type="button">Simulate</button>
+    <button id="btn-submit" type="button">Submit block</button>
+  </div>
 
+  <div id="result" class="hidden" role="dialog" aria-live="polite"></div>
   <!-- Classic script (NOT type="module"): ES modules are blocked over file://,
        so a module tag would leave the page blank when opened via run.bat. -->
   <script src="app.js" charset="utf-8"></script>

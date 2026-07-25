@@ -815,6 +815,8 @@ interface CurrentExecution {
   readonly startMs: number;           // performance.now() when playback began
   raf: number;                        // active rAF handle (for cancellation)
   frac: number;                       // live cursor: fractional box index
+  state: State;                       // chain state at the current box boundary
+  elapsedMs: number;
   done: boolean;
 }
 
@@ -869,7 +871,8 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
 
   const exec: CurrentExecution = {
     level, mode, assets, sims, starts, total: acc,
-    startMs: performance.now(), raf: 0, frac: 0, done: false,
+    startMs: performance.now(), raf: 0, frac: 0,
+    state: sims[0].stateBefore, elapsedMs: 0, done: false,
   };
   currentExecution = exec;
   document.body.classList.add("playing"); // freeze interaction while it plays
@@ -877,9 +880,11 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
   const tick = () => {
     if (currentExecution !== exec) return; // superseded by a newer run
     const ms = performance.now() - exec.startMs;
+    exec.elapsedMs = Math.min(ms, exec.total);
     exec.frac = fracAtMs(exec, ms);
+    exec.state = stateAtFrac(exec, exec.frac);
     drawGraph(level, exec.frac);
-    renderInventory(level, stateAtFrac(exec, exec.frac));
+    renderInventory(level, exec.state);
 
     if (ms < exec.total) {
       exec.raf = requestAnimationFrame(tick);
@@ -887,8 +892,10 @@ function runExecution(level: Level, mode: "simulate" | "submit"): void {
     }
     // ----- finished: rest on the fully-revealed final frame -----
     exec.done = true;
+    exec.elapsedMs = exec.total;
+    exec.state = exec.sims[exec.sims.length - 1].stateAfter;
     drawGraph(level, exec.sims.length);
-    renderInventory(level, exec.sims[exec.sims.length - 1].stateAfter);
+    renderInventory(level, exec.state);
     currentExecution = null;
     document.body.classList.remove("playing");
     if (mode === "submit") showResult(level, exec.sims[exec.sims.length - 1].stateAfter);
