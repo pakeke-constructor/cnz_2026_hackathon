@@ -915,21 +915,11 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
   const finalState = sims[sims.length - 1].stateAfter;
   const startUSDC = initialState(level).balance("PLAYER", USDC);
   const endUSDC = finalState.balance("PLAYER", USDC);
-  const profit = Math.round(endUSDC - startUSDC);
-  const transactions = sims.filter((sim) => !(sim.txn instanceof Noop));
-  const gasFees = transactions.length * 3;
-  const victimLoss = Math.round(transactions.reduce((total, sim) => {
-    const txn = sim.txn;
-    if (txn.owner === "PLAYER" || !(txn instanceof Swap)) return total;
-    const initialPrice = level.pools.find((p) => p.asset === txn.asset)?.price ?? 0;
-    const executionPrice = txn.side === "BUY"
-      ? sim.stateBefore.price(txn.asset) + txn.qty / 2
-      : sim.stateBefore.price(txn.asset) - txn.qty / 2;
-    const loss = txn.side === "BUY"
-      ? (executionPrice - initialPrice) * txn.qty
-      : (initialPrice - executionPrice) * txn.qty;
-    return total + Math.max(0, loss);
-  }, 0));
+  const totalGains = Math.round(endUSDC - startUSDC);
+  const transactions = sims.filter((sim) => (sim.txn.owner == "PLAYER") && !(sim.txn instanceof Noop));
+  const gasFees = transactions.length * 0.3;
+  const profit = totalGains - gasFees;
+  const victimLoss = Math.max(0, totalGains);
   const exposed = level.pools
     .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
     .filter((x) => Math.abs(x.amt) > 1e-9);
