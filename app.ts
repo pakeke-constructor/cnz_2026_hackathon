@@ -219,6 +219,10 @@ interface Level {
   readonly pools: readonly LP[];
   readonly victims: readonly Transaction[];
   readonly allowedOperations: readonly PlayerTxnMeta[];
+  // The player's starting NON-USDC holdings (USDC always starts at STARTING_USDC).
+  // A sell-side sandwich needs you to already hold the asset, so you can SELL to
+  // front-run the victim's sell, then BUY it back — ending with the same bag.
+  readonly startInventory?: Readonly<Record<Asset, number>>;
 }
 
 const LEVEL_1: Level = {
@@ -244,11 +248,34 @@ const LEVEL_2: Level = {
 };
 
 
+const LEVEL_3: Level = {
+  // Sell-side sandwich, 1 victim. The victim SELLS, pushing DOGE down. To profit
+  // you SELL FIRST (front-run down), let the victim sell into the lower price,
+  // then BUY BACK cheap — pocketing the spread. That front-run sell needs DOGE
+  // you already own, so the player starts with a 40-DOGE bag as working capital
+  // and is expected to END with the same 40 DOGE.
+  //
+  // Steve's minAmountOut (180 USDC on a 10-DOGE sell) is his slippage limit: it
+  // caps how far you can front-run before his sell reverts. Price starts at 30;
+  // a front-run of 7 lands the pool at exactly 23, Steve's threshold — that's
+  // the optimal squeeze.
+  pools: [{ asset: "DOGE", price: 30 }],
+  victims: [
+    new Swap("0x1", "Steve", "DOGE", "SELL", 10, 180),
+  ],
+  allowedOperations: [new BUY("DOGE"), new SELL("DOGE")],
+  startInventory: { DOGE: 40 },
+};
+
+
+const STARTING_USDC = 100000;
+
 function initialState(level: Level): State {
   const pools = new Map<Asset, LP>(level.pools.map((p) => [p.asset, p]));
-  const balances = new Map<Owner, ReadonlyMap<Asset, number>>([
-    ["PLAYER", new Map<Asset, number>([[USDC, 100000]])],
-  ]);
+  const bal = new Map<Asset, number>([[USDC, STARTING_USDC]]);
+  for (const [asset, amt] of Object.entries(level.startInventory ?? {}))
+    bal.set(asset, (bal.get(asset) ?? 0) + amt);
+  const balances = new Map<Owner, ReadonlyMap<Asset, number>>([["PLAYER", bal]]);
   return new State(pools, balances);
 }
 
@@ -777,12 +804,17 @@ function spacerEl(kind: "lead" | "trail"): HTMLElement {
 function renderInventory(level: Level, state: State): void {
   const inv = document.getElementById("inventory") as HTMLElement;
   inv.innerHTML = "";
+  const init = initialState(level);
   const assets: Asset[] = [USDC, ...level.pools.map((p) => p.asset)];
   for (const asset of assets) {
     const amount = state.balance("PLAYER", asset);
     const row = document.createElement("div");
     row.className = "inv-row";
-    if (asset !== USDC && Math.abs(amount) > 1e-9) row.classList.add("exposed"); // holding a risky asset
+    // Flag exposure only when a holding has DRIFTED from where it started — a
+    // held starting bag is working capital, not exposure; an unbalanced sandwich
+    // (mid-play, or left unwound at the end) is.
+    if (asset !== USDC && Math.abs(amount - init.balance("PLAYER", asset)) > 1e-9)
+      row.classList.add("exposed");
     const a = document.createElement("span");
     a.className = "inv-asset";
     a.textContent = asset;
@@ -1015,6 +1047,26 @@ interface Settlement {
   readonly botProfit: number;
 }
 
+// Translate every asset the player holds into USDC and net it against the
+// starting inventory. We value the CHANGE in each holding (final minus start),
+// not the raw bag: returning to your starting inventory contributes exactly 0,
+// so your working-capital bag is never marked against the victim's price move —
+// only inventory you FAILED to unwind is scored. Each residual is valued through
+// the pool's own trapezoid fill (what you'd actually net flattening it back to
+// zero), which keeps profit glitch-free: buying and simply holding marks to
+// exactly what you paid, never a free q^2/2.
+function residualValueUSDC(level: Level, finalState: State): number {
+  const init = initialState(level);
+  let total = 0;
+  for (const p of level.pools) {
+    const delta = finalState.balance("PLAYER", p.asset) - init.balance("PLAYER", p.asset);
+    if (Math.abs(delta) < 1e-9) continue;
+    const price = finalState.price(p.asset);
+    total += delta * (price - delta / 2); // liquidate the delta through the pool
+  }
+  return total;
+}
+
 function calculateSettlement(grossGains: number, transactionCount: number): Settlement {
   const gasFees = transactionCount * 0.02;
   const profitBeforeBribe = grossGains - gasFees;
@@ -1030,22 +1082,34 @@ function hideResult(): void {
 
 function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "submit"): void {
   const finalState = sims[sims.length - 1].stateAfter;
-  const startUSDC = initialState(level).balance("PLAYER", USDC);
+  const init = initialState(level);
+  const startUSDC = init.balance("PLAYER", USDC);
   const endUSDC = finalState.balance("PLAYER", USDC);
   const transactions = sims.filter((sim) => sim.txn.owner === "PLAYER" && !(sim.txn instanceof Noop));
-  const settlement = calculateSettlement(endUSDC - startUSDC, transactions.length);
+  // Profit is the USDC delta plus the USDC value of any inventory you didn't
+  // return to its starting amount (see residualValueUSDC).
+  const grossGains = (endUSDC - startUSDC) + residualValueUSDC(level, finalState);
+  const settlement = calculateSettlement(grossGains, transactions.length);
   const victimLoss = Math.max(0, settlement.grossGains);
+  // Inventory-unchanged check: compare each asset's final holding to where it
+  // started. Any drift means you're exposed to the next block's price move.
   const exposed = level.pools
-    .map((p) => ({ asset: p.asset, amt: finalState.balance("PLAYER", p.asset) }))
-    .filter((x) => Math.abs(x.amt) > 1e-9);
+    .map((p) => ({
+      asset: p.asset,
+      start: init.balance("PLAYER", p.asset),
+      amt: finalState.balance("PLAYER", p.asset),
+    }))
+    .filter((x) => Math.abs(x.amt - x.start) > 1e-9);
   const hash = `0x9984954${Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, "0")}`;
   const cls = settlement.botProfit > 0 ? "win" : settlement.botProfit < 0 ? "loss" : "flat";
   const sign = settlement.botProfit > 0 ? "+" : settlement.botProfit < 0 ? "−" : "";
   const money = (value: number) => `$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   let warn = "";
   if (exposed.length) {
-    const list = exposed.map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset}`).join(", ");
-    warn = `<div class="result-warn">You're still holding ${list}, which causes your profit to count as less. Sell back to USDC to lock in your profit!</div>`;
+    const list = exposed
+      .map((x) => `${Math.round(x.amt).toLocaleString()} ${x.asset} (should be ${Math.round(x.start).toLocaleString()})`)
+      .join(", ");
+    warn = `<div class="result-warn">Your inventory didn't return to where it started: ${list}. Trade back to your starting inventory to lock in your profit and avoid exposure to the next block's price move!</div>`;
   }
 
   const box = document.getElementById("result") as HTMLElement;
@@ -1072,7 +1136,7 @@ function showResult(level: Level, sims: readonly BoxSim[], mode: "simulate" | "s
 }
 
 function main(): void {
-  currentLevel = LEVEL_1;
+  currentLevel = LEVEL_3;
   buildPalette(currentLevel);
   buildInventory(currentLevel);
   buildBlock();
